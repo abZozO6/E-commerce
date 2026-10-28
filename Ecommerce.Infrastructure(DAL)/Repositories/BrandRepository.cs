@@ -50,7 +50,7 @@ namespace Ecommerce.Infrastructure_DAL_.Repositories
             FROM dbo.Brands
             WHERE BrandId = @BrandId";
 
-            return await connection.QueryFirstOrDefaultAsync<Brand>(sql, new { BrandId = brandId });
+            return await connection.QuerySingleOrDefaultAsync<Brand>(sql, new { BrandId = brandId });
         }
 
         public async Task<Brand?> GetBySlugAsync(string slug)
@@ -61,7 +61,7 @@ namespace Ecommerce.Infrastructure_DAL_.Repositories
             FROM dbo.Brands
             WHERE Slug = @Slug AND IsActive = 1";
 
-            return await connection.QueryFirstOrDefaultAsync<Brand>(sql, new { Slug = slug });
+            return await connection.QuerySingleOrDefaultAsync<Brand>(sql, new { Slug = slug });
         }
 
         public async Task<bool> ExistsByNameOrSlugAsync(string name, string slug, long? excludeBrandId = null)

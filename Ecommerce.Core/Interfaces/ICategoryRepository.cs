@@ -18,6 +18,7 @@ public interface ICategoryRepository
 
     Task<Category?> GetBySlugAsync(string slug);
 
+    // before update or delete check slug 
     Task<bool> ExistsBySlugAsync(string slug, long? excludeCategoryId = null);
 
     Task<long> CreateAsync(Category category);
