@@ -20,8 +20,7 @@ public class OrderItemRepository : IOrderItemRepository
 
         const string sql = """
             SELECT OrderItemId, OrderId, ProductId, ProductName,
-                   UnitPrice, Quantity, LineTotal
-            FROM dbo.OrderItems
+            SKU, UnitPrice, Quantity, LineTotal
             WHERE OrderItemId = @OrderItemId;
             """;
 
@@ -40,7 +39,7 @@ public class OrderItemRepository : IOrderItemRepository
 
         const string sql = """
             SELECT OrderItemId, OrderId, ProductId, ProductName,
-                   UnitPrice, Quantity, LineTotal
+            SKU, UnitPrice, Quantity, LineTotal
             FROM dbo.OrderItems
             WHERE OrderId = @OrderId
             ORDER BY OrderItemId ASC;

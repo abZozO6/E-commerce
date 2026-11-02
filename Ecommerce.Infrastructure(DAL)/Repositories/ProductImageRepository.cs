@@ -77,6 +77,10 @@ public class ProductImageRepository : IProductImageRepository
         }
 
         using var connection = _connectionFactory.CreateConnection();
+        if (connection.State != ConnectionState.Open)
+        {
+            await connection.OpenAsync();
+        }
 
         const string insertSql = @"
             INSERT INTO dbo.ProductImages
@@ -127,9 +131,12 @@ public class ProductImageRepository : IProductImageRepository
     public async Task<bool> SetMainImageAsync(long imageId,long productId)
     {
         using var connection = _connectionFactory.CreateConnection();
+        if (connection.State != ConnectionState.Open)
+        {
+            await connection.OpenAsync();
+        }
 
-        using var transaction =
-            connection.BeginTransaction(IsolationLevel.Serializable);
+        using var transaction =connection.BeginTransaction(IsolationLevel.Serializable);
 
         try
         {
@@ -216,6 +223,10 @@ public class ProductImageRepository : IProductImageRepository
         }
 
         using var connection = _connectionFactory.CreateConnection();
+        if (connection.State != ConnectionState.Open)
+        {
+            await connection.OpenAsync();
+        }
 
         const string updateSql = @"
             UPDATE dbo.ProductImages

@@ -8,7 +8,7 @@ namespace Ecommerce.Core.Entities
 {
     public class ProductReview
     {
-        public long ProductReviewId { get; set; }
+        public long ReviewId { get; set; }
         public long ProductId { get; set; }
         public long UserId { get; set; }
         public byte Rating { get; set; }

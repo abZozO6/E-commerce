@@ -1,4 +1,5 @@
 using Ecommerce.Core.Interfaces;
+using Ecommerce.Infrastructure;
 using Ecommerce.Infrastructure_DAL_.Data;
 using Ecommerce.Infrastructure_DAL_.Repositories;
 
@@ -8,8 +9,10 @@ builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
-builder.Services.AddSingleton<IDbConnectionFactory, DbConnectionFactory>();
-builder.Services.AddScoped<IBrandRepository, BrandRepository>();
+
+builder.Services.AddInfrastructure();
+
+
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.

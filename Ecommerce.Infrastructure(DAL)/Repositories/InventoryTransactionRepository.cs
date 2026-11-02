@@ -1,4 +1,5 @@
-﻿using Dapper;
+﻿
+using Dapper;
 using Ecommerce.Core.Entities;
 using Ecommerce.Core.Interfaces;
 using Ecommerce.Infrastructure_DAL_.Data;
@@ -14,15 +15,18 @@ public class InventoryTransactionRepository : IInventoryTransactionRepository
         _connectionFactory = connectionFactory;
     }
 
+    /// <summary>
+    /// Retrieves an inventory transaction by its ID.
+    /// </summary>
     public async Task<InventoryTransaction?> GetByIdAsync(long transactionId)
     {
         using var connection = _connectionFactory.CreateConnection();
 
         const string sql = """
-            SELECT TransactionId, ProductId, OrderId, ChangeQuantity,
-                   TransactionType, Notes, CreatedAt
+            SELECT InventoryTransactionId, ProductId, QuantityChange,
+                   TransactionType, ReferenceOrderId, CreatedAt, Notes
             FROM dbo.InventoryTransactions
-            WHERE TransactionId = @TransactionId;
+            WHERE InventoryTransactionId = @TransactionId;
             """;
 
         return await connection.QuerySingleOrDefaultAsync<InventoryTransaction>(
@@ -30,16 +34,20 @@ public class InventoryTransactionRepository : IInventoryTransactionRepository
             new { TransactionId = transactionId });
     }
 
-    public async Task<IEnumerable<InventoryTransaction>> GetByProductIdAsync(long productId)
+    /// <summary>
+    /// Retrieves all inventory transactions for a specific product.
+    /// </summary>
+    public async Task<IEnumerable<InventoryTransaction>> GetByProductIdAsync(
+        long productId)
     {
         using var connection = _connectionFactory.CreateConnection();
 
         const string sql = """
-            SELECT TransactionId, ProductId, OrderId, ChangeQuantity,
-                   TransactionType, Notes, CreatedAt
+            SELECT InventoryTransactionId, ProductId, QuantityChange,
+                   TransactionType, ReferenceOrderId, CreatedAt, Notes
             FROM dbo.InventoryTransactions
             WHERE ProductId = @ProductId
-            ORDER BY CreatedAt DESC, TransactionId DESC;
+            ORDER BY CreatedAt DESC, InventoryTransactionId DESC;
             """;
 
         return await connection.QueryAsync<InventoryTransaction>(
@@ -47,16 +55,20 @@ public class InventoryTransactionRepository : IInventoryTransactionRepository
             new { ProductId = productId });
     }
 
-    public async Task<IEnumerable<InventoryTransaction>> GetByOrderIdAsync( long orderId)
+    /// <summary>
+    /// Retrieves all inventory transactions linked to a specific order.
+    /// </summary>
+    public async Task<IEnumerable<InventoryTransaction>> GetByOrderIdAsync(
+        long orderId)
     {
         using var connection = _connectionFactory.CreateConnection();
 
         const string sql = """
-            SELECT TransactionId, ProductId, OrderId, ChangeQuantity,
-                   TransactionType, Notes, CreatedAt
+            SELECT InventoryTransactionId, ProductId, QuantityChange,
+                   TransactionType, ReferenceOrderId, CreatedAt, Notes
             FROM dbo.InventoryTransactions
-            WHERE OrderId = @OrderId
-            ORDER BY CreatedAt DESC, TransactionId DESC;
+            WHERE ReferenceOrderId = @OrderId
+            ORDER BY CreatedAt DESC, InventoryTransactionId DESC;
             """;
 
         return await connection.QueryAsync<InventoryTransaction>(
@@ -64,9 +76,18 @@ public class InventoryTransactionRepository : IInventoryTransactionRepository
             new { OrderId = orderId });
     }
 
+    /// <summary>
+    /// Creates a new inventory transaction and returns its generated ID.
+    /// </summary>
     public async Task<long> CreateAsync(InventoryTransaction transaction)
     {
         ArgumentNullException.ThrowIfNull(transaction);
+
+        if (transaction.ProductId <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(transaction.ProductId));
+        }
 
         if (transaction.QuantityChange == 0)
         {
@@ -77,14 +98,37 @@ public class InventoryTransactionRepository : IInventoryTransactionRepository
 
         ArgumentException.ThrowIfNullOrWhiteSpace(transaction.TransactionType);
 
+        var allowedTypes = new HashSet<string>
+        {
+            "Restock",
+            "Sale",
+            "Return",
+            "Adjustment"
+        };
+
+        if (!allowedTypes.Contains(transaction.TransactionType))
+        {
+            throw new ArgumentException(
+                "Invalid transaction type.",
+                nameof(transaction));
+        }
+
         using var connection = _connectionFactory.CreateConnection();
 
         const string sql = """
             INSERT INTO dbo.InventoryTransactions (
-                ProductId, OrderId, ChangeQuantity, TransactionType, Notes
+                ProductId,
+                QuantityChange,
+                TransactionType,
+                ReferenceOrderId,
+                Notes
             )
             VALUES (
-                @ProductId, @OrderId, @ChangeQuantity, @TransactionType, @Notes
+                @ProductId,
+                @QuantityChange,
+                @TransactionType,
+                @ReferenceOrderId,
+                @Notes
             );
 
             SELECT CAST(SCOPE_IDENTITY() AS BIGINT);

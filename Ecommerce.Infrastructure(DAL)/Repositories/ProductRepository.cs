@@ -1,6 +1,7 @@
 ﻿using Dapper;
 using Ecommerce.Core.Entities;
 using Ecommerce.Core.Interfaces;
+using System.Data;
 using Ecommerce.Infrastructure_DAL_.Data;
 
 namespace Ecommerce.Infrastructure.Repositories;
@@ -166,7 +167,13 @@ public class ProductRepository : IProductRepository
         }
 
         using var connection = _connectionFactory.CreateConnection();
-        using var transaction = connection.BeginTransaction();
+
+        if (connection.State != ConnectionState.Open)
+        {
+            await connection.OpenAsync();
+        }
+
+        using var transaction = await connection.BeginTransactionAsync();
 
         try
         {
@@ -308,7 +315,13 @@ public class ProductRepository : IProductRepository
         }
 
         using var connection = _connectionFactory.CreateConnection();
-        using var transaction = connection.BeginTransaction();
+
+        if (connection.State != ConnectionState.Open)
+        {
+            await connection.OpenAsync();
+        }
+
+        using var transaction = await connection.BeginTransactionAsync();
 
         try
         {

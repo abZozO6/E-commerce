@@ -14,21 +14,29 @@ public class OrderRepository : IOrderRepository
         _connectionFactory = connectionFactory
             ?? throw new ArgumentNullException(nameof(connectionFactory));
     }
+    /// <summary>
+    /// Retrieves an order by its unique identifier.
+    /// Returns null if the order does not exist.
+    /// </summary>
     public async Task<Order?> GetByIdAsync(long orderId)
     {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(orderId);
+
         using var connection = _connectionFactory.CreateConnection();
 
         const string sql = """
-            SELECT OrderId, UserId, CouponId, Status, Subtotal AS SubTotal,
-                   DiscountAmount, ShippingCost, TotalAmount,
-                   ShippingFullName, ShippingPhone, ShippingCity,
-                   ShippingStreet, ShippingBuildingDetails, CreatedAt
-            FROM dbo.Orders
-            WHERE OrderId = @OrderId;
-            """;
+        SELECT OrderId, OrderNumber, UserId, CouponId,
+               Status, PaymentStatus, Subtotal,
+               DiscountAmount, ShippingCost, TotalAmount,
+               ShippingFullName, ShippingPhone, ShippingCity,
+               ShippingStreet, ShippingBuildingDetails, CreatedAt
+        FROM dbo.Orders
+        WHERE OrderId = @OrderId;
+        """;
 
         return await connection.QuerySingleOrDefaultAsync<Order>(
-            sql, new { OrderId = orderId });
+            sql,
+            new { OrderId = orderId });
     }
 
     public async Task<IEnumerable<Order>> GetByUserIdAsync(long userId)
@@ -36,10 +44,11 @@ public class OrderRepository : IOrderRepository
         using var connection = _connectionFactory.CreateConnection();
 
         const string sql = """
-            SELECT OrderId, UserId, CouponId, Status, Subtotal AS SubTotal,
-                   DiscountAmount, ShippingCost, TotalAmount,
-                   ShippingFullName, ShippingPhone, ShippingCity,
-                   ShippingStreet, ShippingBuildingDetails, CreatedAt
+            SELECT OrderId, OrderNumber, UserId, CouponId,
+            Status, PaymentStatus, Subtotal,
+            DiscountAmount, ShippingCost, TotalAmount,
+            ShippingFullName, ShippingPhone, ShippingCity,
+            ShippingStreet, ShippingBuildingDetails, CreatedAt
             FROM dbo.Orders
             WHERE UserId = @UserId
             ORDER BY CreatedAt DESC;
@@ -60,10 +69,11 @@ public class OrderRepository : IOrderRepository
         using var connection = _connectionFactory.CreateConnection();
 
         const string sql = """
-            SELECT OrderId, UserId, CouponId, Status, Subtotal AS SubTotal,
-                   DiscountAmount, ShippingCost, TotalAmount,
-                   ShippingFullName, ShippingPhone, ShippingCity,
-                   ShippingStreet, ShippingBuildingDetails, CreatedAt
+            SELECT OrderId, OrderNumber, UserId, CouponId,
+            Status, PaymentStatus, Subtotal,
+            DiscountAmount, ShippingCost, TotalAmount,
+            ShippingFullName, ShippingPhone, ShippingCity,
+            ShippingStreet, ShippingBuildingDetails, CreatedAt
             FROM dbo.Orders
             WHERE (@Status IS NULL OR Status = @Status)
             ORDER BY CreatedAt DESC;
