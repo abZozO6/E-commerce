@@ -1,5 +1,4 @@
 ﻿using Ecommerce.Core.Interfaces;
-using Ecommerce.Infrastructure.Repositories;
 using Ecommerce.Infrastructure_DAL_.Data;
 using Ecommerce.Infrastructure_DAL_.Repositories;
 using Microsoft.Extensions.DependencyInjection;

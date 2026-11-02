@@ -4,7 +4,7 @@ using Ecommerce.Core.Interfaces;
 using System.Data;
 using Ecommerce.Infrastructure_DAL_.Data;
 
-namespace Ecommerce.Infrastructure.Repositories;
+using Ecommerce.Infrastructure_DAL_.Repositories;
 
 public class ProductRepository : IProductRepository
 {
