@@ -13,6 +13,8 @@ namespace Ecommerce.Core.Entities
         public string Slug { get; set; } = string.Empty;
         public long? ParentCategoryId { get; set; } = null;
         public bool IsActive { get; set; } = true;
+        public bool IsDeleted { get; set; } = false;
+
 
 
 

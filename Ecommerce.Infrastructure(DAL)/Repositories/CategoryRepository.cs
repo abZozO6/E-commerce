@@ -1,9 +1,10 @@
-﻿using Dapper;
+﻿
+using Dapper;
 using Ecommerce.Core.Entities;
 using Ecommerce.Core.Interfaces;
 using Ecommerce.Infrastructure_DAL_.Data;
 
-using Ecommerce.Infrastructure_DAL_.Repositories;
+namespace Ecommerce.Infrastructure_DAL_.Repositories;
 
 public class CategoryRepository : ICategoryRepository
 {
@@ -19,9 +20,11 @@ public class CategoryRepository : ICategoryRepository
         using var connection = _connectionFactory.CreateConnection();
 
         const string sql = """
-            SELECT CategoryId, Name, Slug, ParentCategoryId, IsActive
+            SELECT CategoryId, Name, Slug, ParentCategoryId,
+                   IsActive, IsDeleted
             FROM dbo.Categories
             WHERE IsActive = 1
+              AND IsDeleted = 0
             ORDER BY Name ASC;
             """;
 
@@ -33,8 +36,10 @@ public class CategoryRepository : ICategoryRepository
         using var connection = _connectionFactory.CreateConnection();
 
         const string sql = """
-            SELECT CategoryId, Name, Slug, ParentCategoryId, IsActive
+            SELECT CategoryId, Name, Slug, ParentCategoryId,
+                   IsActive, IsDeleted
             FROM dbo.Categories
+            WHERE IsDeleted = 0
             ORDER BY ParentCategoryId ASC, Name ASC;
             """;
 
@@ -46,25 +51,30 @@ public class CategoryRepository : ICategoryRepository
         using var connection = _connectionFactory.CreateConnection();
 
         const string sql = """
-            SELECT CategoryId, Name, Slug, ParentCategoryId, IsActive
+            SELECT CategoryId, Name, Slug, ParentCategoryId,
+                   IsActive, IsDeleted
             FROM dbo.Categories
             WHERE ParentCategoryId IS NULL
               AND IsActive = 1
+              AND IsDeleted = 0
             ORDER BY Name ASC;
             """;
 
         return await connection.QueryAsync<Category>(sql);
     }
 
-    public async Task<IEnumerable<Category>> GetSubCategoriesAsync(long parentCategoryId)
+    public async Task<IEnumerable<Category>> GetSubCategoriesAsync(
+        long parentCategoryId)
     {
         using var connection = _connectionFactory.CreateConnection();
 
         const string sql = """
-            SELECT CategoryId, Name, Slug, ParentCategoryId, IsActive
+            SELECT CategoryId, Name, Slug, ParentCategoryId,
+                   IsActive, IsDeleted
             FROM dbo.Categories
             WHERE ParentCategoryId = @ParentCategoryId
               AND IsActive = 1
+              AND IsDeleted = 0
             ORDER BY Name ASC;
             """;
 
@@ -78,9 +88,11 @@ public class CategoryRepository : ICategoryRepository
         using var connection = _connectionFactory.CreateConnection();
 
         const string sql = """
-            SELECT CategoryId, Name, Slug, ParentCategoryId, IsActive
+            SELECT CategoryId, Name, Slug, ParentCategoryId,
+                   IsActive, IsDeleted
             FROM dbo.Categories
-            WHERE CategoryId = @CategoryId;
+            WHERE CategoryId = @CategoryId
+              AND IsDeleted = 0;
             """;
 
         return await connection.QuerySingleOrDefaultAsync<Category>(
@@ -95,10 +107,12 @@ public class CategoryRepository : ICategoryRepository
         using var connection = _connectionFactory.CreateConnection();
 
         const string sql = """
-            SELECT CategoryId, Name, Slug, ParentCategoryId, IsActive
+            SELECT CategoryId, Name, Slug, ParentCategoryId,
+                   IsActive, IsDeleted
             FROM dbo.Categories
             WHERE Slug = @Slug
-              AND IsActive = 1;
+              AND IsActive = 1
+              AND IsDeleted = 0;
             """;
 
         return await connection.QuerySingleOrDefaultAsync<Category>(
@@ -106,7 +120,9 @@ public class CategoryRepository : ICategoryRepository
             new { Slug = slug });
     }
 
-    public async Task<bool> ExistsBySlugAsync(string slug,long? excludeCategoryId = null)
+    public async Task<bool> ExistsBySlugAsync(
+        string slug,
+        long? excludeCategoryId = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(slug);
 
@@ -118,6 +134,7 @@ public class CategoryRepository : ICategoryRepository
                     SELECT 1
                     FROM dbo.Categories
                     WHERE Slug = @Slug
+                      AND IsDeleted = 0
                       AND (@ExcludeCategoryId IS NULL
                            OR CategoryId <> @ExcludeCategoryId)
                 )
@@ -151,9 +168,9 @@ public class CategoryRepository : ICategoryRepository
 
         const string sql = """
             INSERT INTO dbo.Categories
-                (Name, Slug, ParentCategoryId, IsActive)
+                (Name, Slug, ParentCategoryId, IsActive, IsDeleted)
             VALUES
-                (@Name, @Slug, @ParentCategoryId, @IsActive);
+                (@Name, @Slug, @ParentCategoryId, @IsActive, 0);
 
             SELECT CAST(SCOPE_IDENTITY() AS BIGINT);
             """;
@@ -181,7 +198,8 @@ public class CategoryRepository : ICategoryRepository
                 Slug = @Slug,
                 ParentCategoryId = @ParentCategoryId,
                 IsActive = @IsActive
-            WHERE CategoryId = @CategoryId;
+            WHERE CategoryId = @CategoryId
+              AND IsDeleted = 0;
             """;
 
         var rowsAffected = await connection.ExecuteAsync(sql, category);
@@ -194,8 +212,11 @@ public class CategoryRepository : ICategoryRepository
         using var connection = _connectionFactory.CreateConnection();
 
         const string sql = """
-            DELETE FROM dbo.Categories
-            WHERE CategoryId = @CategoryId;
+            UPDATE dbo.Categories
+            SET IsDeleted = 1,
+                IsActive = 0
+            WHERE CategoryId = @CategoryId
+              AND IsDeleted = 0;
             """;
 
         var rowsAffected = await connection.ExecuteAsync(

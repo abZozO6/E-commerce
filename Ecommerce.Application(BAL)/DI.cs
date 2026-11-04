@@ -11,10 +11,13 @@ namespace Ecommerce.Application_BAL_
 {
     public static class DI
     {
-        public static IServiceCollection AddApplication(
-        this IServiceCollection services)
+        public static IServiceCollection AddApplication(this IServiceCollection services)
         {
             services.AddScoped<IBrandService, BrandService>();
+
+            services.AddScoped<ICategoryService, CategoryService>();
+
+            services.AddScoped<IProductService, ProductService>();
 
             return services;
         }

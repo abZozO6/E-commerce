@@ -1,10 +1,8 @@
 ﻿using Dapper;
 using Ecommerce.Core.Entities;
 using Ecommerce.Core.Interfaces;
-using System.Data;
 using Ecommerce.Infrastructure_DAL_.Data;
-
-using Ecommerce.Infrastructure_DAL_.Repositories;
+using System.Data;
 
 public class ProductRepository : IProductRepository
 {
@@ -71,7 +69,6 @@ public class ProductRepository : IProductRepository
 
     /// <summary>
     /// Retrieves active products matching the supplied optional filters.
-    /// Supports category, brand, name or SKU search, and price range filtering.
     /// </summary>
     public async Task<IEnumerable<Product>> GetActiveFilteredAsync(
         long? categoryId = null,
@@ -87,7 +84,9 @@ public class ProductRepository : IProductRepository
                 "Price filters cannot be negative.");
         }
 
-        if (minPrice.HasValue && maxPrice.HasValue && minPrice > maxPrice)
+        if (minPrice.HasValue &&
+            maxPrice.HasValue &&
+            minPrice > maxPrice)
         {
             throw new ArgumentException(
                 "Minimum price cannot exceed maximum price.");
@@ -124,11 +123,9 @@ public class ProductRepository : IProductRepository
     }
 
     /// <summary>
-    /// Checks whether another product already uses the supplied SKU or slug.
-    /// An optional product ID can be excluded when checking an existing product.
+    /// Checks whether another product already uses the supplied slug.
     /// </summary>
-    public async Task<bool> ExistsBySkuOrSlugAsync(
-        string sku,
+    public async Task<bool> ExistsBySlugAsync(
         string slug,
         long? excludeProductId = null)
     {
@@ -138,22 +135,20 @@ public class ProductRepository : IProductRepository
             SELECT CASE WHEN EXISTS (
                 SELECT 1
                 FROM dbo.Products
-                WHERE (SKU = @SKU OR Slug = @Slug)
+                WHERE Slug = @Slug
                   AND (@ExcludeId IS NULL OR ProductId <> @ExcludeId)
             ) THEN 1 ELSE 0 END";
 
         return await connection.ExecuteScalarAsync<bool>(sql, new
         {
-            SKU = sku.Trim(),
             Slug = slug.Trim(),
             ExcludeId = excludeProductId
         });
     }
 
     /// <summary>
-    /// Creates a product and records its initial stock as a Restock transaction
-    /// when the initial stock quantity is greater than zero.
-    /// Both operations are committed atomically.
+    /// Creates a product, generates its SKU, and records its initial stock.
+    /// Both database operations are committed atomically.
     /// </summary>
     public async Task<long> CreateAsync(Product product)
     {
@@ -177,14 +172,40 @@ public class ProductRepository : IProductRepository
 
         try
         {
+            // Generate a unique SKU using SQL Server Sequence.
+            const string getNextSkuSql = @"
+                SELECT NEXT VALUE FOR dbo.ProductSkuSequence;";
+
+            long skuNumber = await connection.ExecuteScalarAsync<long>(
+                getNextSkuSql,
+                transaction: transaction);
+
+            product.SKU = $"PRD-{skuNumber:D6}";
+
             const string insertProductSql = @"
                 INSERT INTO dbo.Products (
-                    CategoryId, BrandId, Name, Slug, SKU, Description,
-                    Price, StockQuantity, WarrantyMonths, IsActive
+                    CategoryId,
+                    BrandId,
+                    Name,
+                    Slug,
+                    SKU,
+                    Description,
+                    Price,
+                    StockQuantity,
+                    WarrantyMonths,
+                    IsActive
                 )
                 VALUES (
-                    @CategoryId, @BrandId, @Name, @Slug, @SKU, @Description,
-                    @Price, @StockQuantity, @WarrantyMonths, @IsActive
+                    @CategoryId,
+                    @BrandId,
+                    @Name,
+                    @Slug,
+                    @SKU,
+                    @Description,
+                    @Price,
+                    @StockQuantity,
+                    @WarrantyMonths,
+                    @IsActive
                 );
 
                 SELECT CAST(SCOPE_IDENTITY() AS BIGINT);";
@@ -194,16 +215,23 @@ public class ProductRepository : IProductRepository
                 product,
                 transaction);
 
+            // Record the initial stock in the inventory history.
             if (product.StockQuantity > 0)
             {
                 const string insertInventorySql = @"
                     INSERT INTO dbo.InventoryTransactions (
-                        ProductId, QuantityChange, TransactionType,
-                        ReferenceOrderId, Notes
+                        ProductId,
+                        QuantityChange,
+                        TransactionType,
+                        ReferenceOrderId,
+                        Notes
                     )
                     VALUES (
-                        @ProductId, @QuantityChange, 'Restock',
-                        NULL, @Notes
+                        @ProductId,
+                        @QuantityChange,
+                        'Restock',
+                        NULL,
+                        @Notes
                     );";
 
                 await connection.ExecuteAsync(insertInventorySql, new
@@ -215,6 +243,7 @@ public class ProductRepository : IProductRepository
             }
 
             transaction.Commit();
+
             return productId;
         }
         catch
@@ -226,7 +255,8 @@ public class ProductRepository : IProductRepository
 
     /// <summary>
     /// Updates product details only when the supplied RowVersion matches
-    /// the current database version, preventing stale updates.
+    /// the current database version.
+    /// SKU is immutable and is not updated.
     /// </summary>
     public async Task<bool> UpdateWithRowVersionAsync(Product product)
     {
@@ -247,7 +277,6 @@ public class ProductRepository : IProductRepository
                 BrandId = @BrandId,
                 Name = @Name,
                 Slug = @Slug,
-                SKU = @SKU,
                 Description = @Description,
                 Price = @Price,
                 WarrantyMonths = @WarrantyMonths,
@@ -261,9 +290,8 @@ public class ProductRepository : IProductRepository
     }
 
     /// <summary>
-    /// Adjusts a product's stock and records the corresponding inventory
-    /// transaction atomically. Returns false if the product is missing,
-    /// its RowVersion is stale, or the adjustment would make stock negative.
+    /// Adjusts product stock and records the corresponding inventory
+    /// transaction atomically.
     /// </summary>
     public async Task<bool> AdjustStockWithTransactionAsync(
         long productId,
@@ -332,12 +360,15 @@ public class ProductRepository : IProductRepository
                   AND RowVersion = @RowVersion
                   AND (StockQuantity + @QuantityChange) >= 0;";
 
-            int updatedRows = await connection.ExecuteAsync(updateStockSql, new
-            {
-                ProductId = productId,
-                QuantityChange = quantityChange,
-                RowVersion = rowVersion
-            }, transaction);
+            int updatedRows = await connection.ExecuteAsync(
+                updateStockSql,
+                new
+                {
+                    ProductId = productId,
+                    QuantityChange = quantityChange,
+                    RowVersion = rowVersion
+                },
+                transaction);
 
             if (updatedRows == 0)
             {
@@ -347,12 +378,18 @@ public class ProductRepository : IProductRepository
 
             const string insertInventoryTxSql = @"
                 INSERT INTO dbo.InventoryTransactions (
-                    ProductId, QuantityChange, TransactionType,
-                    ReferenceOrderId, Notes
+                    ProductId,
+                    QuantityChange,
+                    TransactionType,
+                    ReferenceOrderId,
+                    Notes
                 )
                 VALUES (
-                    @ProductId, @QuantityChange, @TransactionType,
-                    NULL, @Notes
+                    @ProductId,
+                    @QuantityChange,
+                    @TransactionType,
+                    NULL,
+                    @Notes
                 );";
 
             await connection.ExecuteAsync(insertInventoryTxSql, new
@@ -364,6 +401,7 @@ public class ProductRepository : IProductRepository
             }, transaction);
 
             transaction.Commit();
+
             return true;
         }
         catch
@@ -374,9 +412,11 @@ public class ProductRepository : IProductRepository
     }
 
     /// <summary>
-    /// Activates or deactivates a product and returns whether a row was updated.
+    /// Activates or deactivates a product.
     /// </summary>
-    public async Task<bool> SetActiveStatusAsync(long productId,bool isActive)
+    public async Task<bool> SetActiveStatusAsync(
+        long productId,
+        bool isActive)
     {
         using var connection = _connectionFactory.CreateConnection();
 
