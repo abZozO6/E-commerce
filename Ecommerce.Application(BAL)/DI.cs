@@ -19,6 +19,12 @@ namespace Ecommerce.Application_BAL_
 
             services.AddScoped<IProductService, ProductService>();
 
+            services.AddScoped<IProductImageService, ProductImageService>();
+
+            services.AddScoped<IProductSpecificationService,ProductSpecificationService>();
+
+            services.AddScoped<IProductReviewService, ProductReviewService>();
+
             return services;
         }
 

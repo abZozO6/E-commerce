@@ -12,6 +12,7 @@ namespace Ecommerce.Core.Entities
         public long ProductId { get; set; }
         public string SpecName { get; set; } = string.Empty;
         public string SpecValue { get; set; } = string.Empty;
+        public int DisplayOrder { get; set; }
 
     }
 }

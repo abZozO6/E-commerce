@@ -4,7 +4,7 @@ using Ecommerce.Core.Interfaces;
 using Ecommerce.Infrastructure_DAL_.Data;
 using System.Data;
 
-using Ecommerce.Infrastructure_DAL_.Repositories;
+namespace Ecommerce.Infrastructure_DAL_.Repositories;
 
 public class ProductImageRepository : IProductImageRepository
 {
@@ -311,23 +311,68 @@ public class ProductImageRepository : IProductImageRepository
         }
     }
 
+
     public async Task<bool> DeleteAsync(long imageId, long productId)
     {
         using var connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync();
 
-        const string sql = @"
+        using var transaction =
+            connection.BeginTransaction(IsolationLevel.Serializable);
+
+        try
+        {
+            const string deleteSql = @"
+            DELETE FROM dbo.ProductImages
+            WHERE ProductImageId = @ProductImageId
+              AND ProductId = @ProductId
+              AND IsPrimary = 1;
+
+            IF @@ROWCOUNT > 0
+            BEGIN
+                DECLARE @NextImageId BIGINT;
+
+                SELECT TOP 1 @NextImageId = ProductImageId
+                FROM dbo.ProductImages
+                WHERE ProductId = @ProductId
+                ORDER BY DisplayOrder ASC, ProductImageId ASC;
+
+                IF @NextImageId IS NOT NULL
+                BEGIN
+                    UPDATE dbo.ProductImages
+                    SET IsPrimary = 1
+                    WHERE ProductImageId = @NextImageId;
+                END
+            END
+        ";
+
+            // Handle deletion of a non-primary image separately.
+            const string deleteAnySql = @"
             DELETE FROM dbo.ProductImages
             WHERE ProductImageId = @ProductImageId
               AND ProductId = @ProductId;";
 
-        int rowsAffected = await connection.ExecuteAsync(
-            sql,
-            new
-            {
-                ProductImageId = imageId,
-                ProductId = productId
-            });
+            int rowsAffected = await connection.ExecuteAsync(
+                deleteSql,
+                new { ProductImageId = imageId, ProductId = productId },
+                transaction);
 
-        return rowsAffected > 0;
+            if (rowsAffected == 0)
+            {
+                rowsAffected = await connection.ExecuteAsync(
+                    deleteAnySql,
+                    new { ProductImageId = imageId, ProductId = productId },
+                    transaction);
+            }
+
+            transaction.Commit();
+            return rowsAffected > 0;
+        }
+        catch
+        {
+            transaction.Rollback();
+            throw;
+        }
     }
+
 }

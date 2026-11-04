@@ -2,6 +2,8 @@ using System.Collections.Generic;
 using System.Threading.Tasks;
 using Ecommerce.Core.Entities;
 
+using Ecommerce.Core.Entities;
+
 namespace Ecommerce.Core.Interfaces;
 
 public interface IProductSpecificationRepository
@@ -12,10 +14,9 @@ public interface IProductSpecificationRepository
 
     Task<long> UpsertAsync(ProductSpecification spec);
 
-    Task<bool> ReplaceProductSpecificationsAsync(long productId, IEnumerable<ProductSpecification> specifications);
+    Task<bool> ReplaceProductSpecificationsAsync(long productId,IEnumerable<ProductSpecification> specifications);
 
     Task<bool> UpdateAsync(ProductSpecification spec);
 
     Task<bool> DeleteAsync(long specId, long productId);
-
 }

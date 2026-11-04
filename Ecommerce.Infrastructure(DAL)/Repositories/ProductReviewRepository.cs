@@ -1,10 +1,10 @@
-﻿
-using Dapper;
+﻿using Dapper;
 using Ecommerce.Core.Entities;
 using Ecommerce.Core.Interfaces;
 using Ecommerce.Infrastructure_DAL_.Data;
+using System.Data;
 
-using Ecommerce.Infrastructure_DAL_.Repositories;
+namespace Ecommerce.Infrastructure_DAL_.Repositories;
 
 public class ProductReviewRepository : IProductReviewRepository
 {
@@ -16,10 +16,6 @@ public class ProductReviewRepository : IProductReviewRepository
             ?? throw new ArgumentNullException(nameof(connectionFactory));
     }
 
-    /// <summary>
-    /// Retrieves a product review by its unique identifier.
-    /// Returns null when the review does not exist.
-    /// </summary>
     public async Task<ProductReview?> GetByIdAsync(long reviewId)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(reviewId);
@@ -33,16 +29,10 @@ public class ProductReviewRepository : IProductReviewRepository
             """;
 
         return await connection.QuerySingleOrDefaultAsync<ProductReview>(
-            sql,
-            new { ReviewId = reviewId });
+            sql, new { ReviewId = reviewId });
     }
 
-    /// <summary>
-    /// Retrieves all reviews belonging to a specific product.
-    /// Results are ordered from newest to oldest.
-    /// </summary>
-    public async Task<IEnumerable<ProductReview>> GetByProductIdAsync(
-        long productId)
+    public async Task<IEnumerable<ProductReview>> GetByProductIdAsync(long productId)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(productId);
 
@@ -52,20 +42,14 @@ public class ProductReviewRepository : IProductReviewRepository
             SELECT ReviewId, ProductId, UserId, Rating, Comment, CreatedAt
             FROM dbo.ProductReviews
             WHERE ProductId = @ProductId
-            ORDER BY CreatedAt DESC;
+            ORDER BY CreatedAt DESC, ReviewId DESC;
             """;
 
         return await connection.QueryAsync<ProductReview>(
-            sql,
-            new { ProductId = productId });
+            sql, new { ProductId = productId });
     }
 
-    /// <summary>
-    /// Retrieves all reviews created by a specific user.
-    /// Results are ordered from newest to oldest.
-    /// </summary>
-    public async Task<IEnumerable<ProductReview>> GetByUserIdAsync(
-        long userId)
+    public async Task<IEnumerable<ProductReview>> GetByUserIdAsync(long userId)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(userId);
 
@@ -75,22 +59,14 @@ public class ProductReviewRepository : IProductReviewRepository
             SELECT ReviewId, ProductId, UserId, Rating, Comment, CreatedAt
             FROM dbo.ProductReviews
             WHERE UserId = @UserId
-            ORDER BY CreatedAt DESC;
+            ORDER BY CreatedAt DESC, ReviewId DESC;
             """;
 
         return await connection.QueryAsync<ProductReview>(
-            sql,
-            new { UserId = userId });
+            sql, new { UserId = userId });
     }
 
-    /// <summary>
-    /// Retrieves a user's review for a specific product.
-    /// Returns null when no matching review exists.
-    /// Assumes that each user can review a product only once.
-    /// </summary>
-    public async Task<ProductReview?> GetByProductAndUserAsync(
-        long productId,
-        long userId)
+    public async Task<ProductReview?> GetByProductAndUserAsync(long productId,long userId)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(productId);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(userId);
@@ -106,20 +82,10 @@ public class ProductReviewRepository : IProductReviewRepository
 
         return await connection.QuerySingleOrDefaultAsync<ProductReview>(
             sql,
-            new
-            {
-                ProductId = productId,
-                UserId = userId
-            });
+            new { ProductId = productId, UserId = userId });
     }
 
-    /// <summary>
-    /// Calculates the average rating and total number of reviews
-    /// for a specific product.
-    /// Returns zero for both values when no reviews exist.
-    /// </summary>
-    public async Task<(double AverageRating, int TotalReviews)>
-        GetRatingSummaryAsync(long productId)
+    public async Task<(double AverageRating, int TotalReviews)> GetRatingSummaryAsync(long productId)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(productId);
 
@@ -134,32 +100,24 @@ public class ProductReviewRepository : IProductReviewRepository
             """;
 
         var result = await connection.QuerySingleAsync<RatingSummaryRow>(
-            sql,
-            new { ProductId = productId });
+            sql, new { ProductId = productId });
 
         return (result.AverageRating, result.TotalReviews);
     }
 
-    /// <summary>
-    /// Creates a new product review and returns its generated identifier.
-    /// Validates the rating and required identifiers before insertion.
-    /// </summary>
     public async Task<long> CreateAsync(ProductReview review)
     {
         ArgumentNullException.ThrowIfNull(review);
 
-        ValidateRating(review.Rating);
-
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(review.ProductId);
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(review.UserId);
+        ValidateReview(review);
 
         using var connection = _connectionFactory.CreateConnection();
 
         const string sql = """
             INSERT INTO dbo.ProductReviews
-                (ProductId, UserId, Rating, Comment)
+                (ProductId, UserId, Rating, Comment, CreatedAt)
             VALUES
-                (@ProductId, @UserId, @Rating, @Comment);
+                (@ProductId, @UserId, @Rating, @Comment, SYSUTCDATETIME());
 
             SELECT CAST(SCOPE_IDENTITY() AS BIGINT);
             """;
@@ -167,19 +125,13 @@ public class ProductReviewRepository : IProductReviewRepository
         return await connection.ExecuteScalarAsync<long>(sql, review);
     }
 
-    /// <summary>
-    /// Updates the rating and comment of an existing review.
-    /// Only the review owner can update the review.
-    /// Returns false when no matching review is found.
-    /// </summary>
     public async Task<bool> UpdateAsync(ProductReview review)
     {
         ArgumentNullException.ThrowIfNull(review);
 
-        ValidateRating(review.Rating);
+        ValidateReview(review);
 
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(review.ReviewId);
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(review.UserId);
 
         using var connection = _connectionFactory.CreateConnection();
 
@@ -188,6 +140,7 @@ public class ProductReviewRepository : IProductReviewRepository
             SET Rating = @Rating,
                 Comment = @Comment
             WHERE ReviewId = @ReviewId
+              AND ProductId = @ProductId
               AND UserId = @UserId;
             """;
 
@@ -196,16 +149,7 @@ public class ProductReviewRepository : IProductReviewRepository
         return rowsAffected > 0;
     }
 
-    /// <summary>
-    /// Deletes a review if the requester owns it or has administrator
-    /// privileges. The isAdmin value must come from trusted,
-    /// server-side authorization.
-    /// Returns false when no matching review is found.
-    /// </summary>
-    public async Task<bool> DeleteAsync(
-        long reviewId,
-        long userId,
-        bool isAdmin = false)
+    public async Task<bool> DeleteAsync( long reviewId,long userId,bool isAdmin = false)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(reviewId);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(userId);
@@ -230,26 +174,33 @@ public class ProductReviewRepository : IProductReviewRepository
         return rowsAffected > 0;
     }
 
-    /// <summary>
-    /// Validates that the rating is between 1 and 5.
-    /// </summary>
-    private static void ValidateRating(byte rating)
+    private static void ValidateReview(ProductReview review)
     {
-        if (rating is < 1 or > 5)
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(review.ProductId);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(review.UserId);
+
+        if (review.Rating is < 1 or > 5)
         {
             throw new ArgumentOutOfRangeException(
-                nameof(rating),
+                nameof(review.Rating),
                 "Rating must be between 1 and 5.");
         }
+
+        if (review.Comment?.Length > 1000)
+        {
+            throw new ArgumentException(
+                "Comment cannot exceed 1000 characters.",
+                nameof(review.Comment));
+        }
+
+        review.Comment = string.IsNullOrWhiteSpace(review.Comment)
+            ? null
+            : review.Comment.Trim();
     }
 
-    /// <summary>
-    /// Represents the database result returned by the rating summary query.
-    /// </summary>
     private sealed class RatingSummaryRow
     {
         public double AverageRating { get; set; }
-
         public int TotalReviews { get; set; }
     }
 }

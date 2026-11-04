@@ -4,7 +4,7 @@ using Ecommerce.Core.Interfaces;
 using Ecommerce.Infrastructure_DAL_.Data;
 using System.Data;
 
-using Ecommerce.Infrastructure_DAL_.Repositories;
+namespace Ecommerce.Infrastructure_DAL_.Repositories;
 
 public class ProductSpecificationRepository : IProductSpecificationRepository
 {
@@ -27,7 +27,8 @@ public class ProductSpecificationRepository : IProductSpecificationRepository
                 SpecificationId,
                 ProductId,
                 SpecName,
-                SpecValue
+                SpecValue,
+                DisplayOrder
             FROM dbo.ProductSpecifications
             WHERE SpecificationId = @SpecId;";
 
@@ -47,10 +48,11 @@ public class ProductSpecificationRepository : IProductSpecificationRepository
                 SpecificationId,
                 ProductId,
                 SpecName,
-                SpecValue
+                SpecValue,
+                DisplayOrder
             FROM dbo.ProductSpecifications
             WHERE ProductId = @ProductId
-            ORDER BY SpecificationId ASC;";
+            ORDER BY DisplayOrder ASC, SpecificationId ASC;";
 
         return await connection.QueryAsync<ProductSpecification>(
             sql,
@@ -58,14 +60,13 @@ public class ProductSpecificationRepository : IProductSpecificationRepository
     }
 
     /// <summary>
-    /// Inserts a specification if it does not exist for the product,
-    /// or updates its value if it already exists.
-    /// Returns the identifier of the inserted or updated specification.
+    /// Inserts a specification or updates the existing specification
+    /// with the same name for the product.
     /// </summary>
     public async Task<long> UpsertAsync(ProductSpecification spec)
     {
         ArgumentNullException.ThrowIfNull(spec);
-        ValidateSpecification(spec);
+        NormalizeAndValidate(spec);
 
         using var connection = _connectionFactory.CreateConnection();
         connection.Open();
@@ -75,7 +76,6 @@ public class ProductSpecificationRepository : IProductSpecificationRepository
 
         try
         {
-            // Lock the matching key range to reduce concurrent insert conflicts.
             const string findSql = @"
                 SELECT SpecificationId
                 FROM dbo.ProductSpecifications WITH (UPDLOCK, HOLDLOCK)
@@ -98,7 +98,8 @@ public class ProductSpecificationRepository : IProductSpecificationRepository
             {
                 const string updateSql = @"
                     UPDATE dbo.ProductSpecifications
-                    SET SpecValue = @SpecValue
+                    SET SpecValue = @SpecValue,
+                        DisplayOrder = @DisplayOrder
                     WHERE SpecificationId = @SpecificationId;";
 
                 await connection.ExecuteAsync(
@@ -106,7 +107,8 @@ public class ProductSpecificationRepository : IProductSpecificationRepository
                     new
                     {
                         SpecificationId = existingSpecId.Value,
-                        spec.SpecValue
+                        spec.SpecValue,
+                        spec.DisplayOrder
                     },
                     transaction);
 
@@ -116,9 +118,19 @@ public class ProductSpecificationRepository : IProductSpecificationRepository
             {
                 const string insertSql = @"
                     INSERT INTO dbo.ProductSpecifications
-                        (ProductId, SpecName, SpecValue)
+                    (
+                        ProductId,
+                        SpecName,
+                        SpecValue,
+                        DisplayOrder
+                    )
                     VALUES
-                        (@ProductId, @SpecName, @SpecValue);
+                    (
+                        @ProductId,
+                        @SpecName,
+                        @SpecValue,
+                        @DisplayOrder
+                    );
 
                     SELECT CAST(SCOPE_IDENTITY() AS BIGINT);";
 
@@ -140,14 +152,10 @@ public class ProductSpecificationRepository : IProductSpecificationRepository
     }
 
     /// <summary>
-    /// Replaces all specifications of a product with the supplied collection.
-    /// All deletions and insertions are committed together or rolled back
-    /// together if an operation fails.
-    /// An empty collection removes all existing specifications.
+    /// Replaces all specifications belonging to a product.
+    /// The operation is atomic.
     /// </summary>
-    public async Task<bool> ReplaceProductSpecificationsAsync(
-        long productId,
-        IEnumerable<ProductSpecification> specifications)
+    public async Task<bool> ReplaceProductSpecificationsAsync(long productId,IEnumerable<ProductSpecification> specifications)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(productId);
         ArgumentNullException.ThrowIfNull(specifications);
@@ -157,12 +165,15 @@ public class ProductSpecificationRepository : IProductSpecificationRepository
         foreach (var spec in specificationList)
         {
             ArgumentNullException.ThrowIfNull(spec);
-            ValidateSpecification(spec, validateProductId: false);
+
+            spec.ProductId = productId;
+            NormalizeAndValidate(spec);
         }
 
-        // Reject duplicate names before modifying the database.
         var hasDuplicateNames = specificationList
-            .GroupBy(spec => spec.SpecName, StringComparer.OrdinalIgnoreCase)
+            .GroupBy(
+                spec => spec.SpecName,
+                StringComparer.OrdinalIgnoreCase)
             .Any(group => group.Count() > 1);
 
         if (hasDuplicateNames)
@@ -175,7 +186,8 @@ public class ProductSpecificationRepository : IProductSpecificationRepository
         using var connection = _connectionFactory.CreateConnection();
         connection.Open();
 
-        using var transaction = connection.BeginTransaction();
+        using var transaction =
+            connection.BeginTransaction(IsolationLevel.Serializable);
 
         try
         {
@@ -190,20 +202,25 @@ public class ProductSpecificationRepository : IProductSpecificationRepository
 
             const string insertSql = @"
                 INSERT INTO dbo.ProductSpecifications
-                    (ProductId, SpecName, SpecValue)
+                (
+                    ProductId,
+                    SpecName,
+                    SpecValue,
+                    DisplayOrder
+                )
                 VALUES
-                    (@ProductId, @SpecName, @SpecValue);";
+                (
+                    @ProductId,
+                    @SpecName,
+                    @SpecValue,
+                    @DisplayOrder
+                );";
 
             foreach (var spec in specificationList)
             {
                 await connection.ExecuteAsync(
                     insertSql,
-                    new
-                    {
-                        ProductId = productId,
-                        spec.SpecName,
-                        spec.SpecValue
-                    },
+                    spec,
                     transaction);
             }
 
@@ -219,9 +236,7 @@ public class ProductSpecificationRepository : IProductSpecificationRepository
     }
 
     /// <summary>
-    /// Updates the name and value of an existing specification.
-    /// The specification must belong to the specified product.
-    /// Returns false when no matching record exists.
+    /// Updates an existing specification belonging to a product.
     /// </summary>
     public async Task<bool> UpdateAsync(ProductSpecification spec)
     {
@@ -230,14 +245,15 @@ public class ProductSpecificationRepository : IProductSpecificationRepository
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(
             spec.SpecificationId);
 
-        ValidateSpecification(spec);
+        NormalizeAndValidate(spec);
 
         using var connection = _connectionFactory.CreateConnection();
 
         const string sql = @"
             UPDATE dbo.ProductSpecifications
             SET SpecName = @SpecName,
-                SpecValue = @SpecValue
+                SpecValue = @SpecValue,
+                DisplayOrder = @DisplayOrder
             WHERE SpecificationId = @SpecificationId
               AND ProductId = @ProductId;";
 
@@ -247,8 +263,7 @@ public class ProductSpecificationRepository : IProductSpecificationRepository
     }
 
     /// <summary>
-    /// Deletes a specification only when its identifier and product identifier
-    /// both match. Returns false when no matching record exists.
+    /// Deletes a specification only when it belongs to the specified product.
     /// </summary>
     public async Task<bool> DeleteAsync(long specId, long productId)
     {
@@ -273,29 +288,45 @@ public class ProductSpecificationRepository : IProductSpecificationRepository
         return rowsAffected > 0;
     }
 
-    /// <summary>
-    /// Validates the required specification fields and their values.
-    /// </summary>
-    private static void ValidateSpecification(ProductSpecification spec,bool validateProductId = true)
+    private static void NormalizeAndValidate(ProductSpecification spec)
     {
-        if (validateProductId)
-        {
-            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(
-                spec.ProductId);
-        }
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(
+            spec.ProductId);
 
         if (string.IsNullOrWhiteSpace(spec.SpecName))
         {
             throw new ArgumentException(
-                "Specification name cannot be empty.",
+                "Specification name is required.",
                 nameof(spec.SpecName));
         }
 
         if (string.IsNullOrWhiteSpace(spec.SpecValue))
         {
             throw new ArgumentException(
-                "Specification value cannot be empty.",
+                "Specification value is required.",
                 nameof(spec.SpecValue));
+        }
+
+        spec.SpecName = spec.SpecName.Trim();
+        spec.SpecValue = spec.SpecValue.Trim();
+
+        if (spec.SpecName.Length > 100)
+        {
+            throw new ArgumentException(
+                "Specification name cannot exceed 100 characters.");
+        }
+
+        if (spec.SpecValue.Length > 500)
+        {
+            throw new ArgumentException(
+                "Specification value cannot exceed 500 characters.");
+        }
+
+        if (spec.DisplayOrder < 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(spec.DisplayOrder),
+                "Display order cannot be negative.");
         }
     }
 }
