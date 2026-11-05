@@ -25,6 +25,8 @@ namespace Ecommerce.Application_BAL_
 
             services.AddScoped<IProductReviewService, ProductReviewService>();
 
+            services.AddScoped<IAddressService, AddressService>();
+
             return services;
         }
 

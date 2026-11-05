@@ -2,9 +2,8 @@
 using Ecommerce.Core.Entities;
 using Ecommerce.Core.Interfaces;
 using Ecommerce.Infrastructure_DAL_.Data;
-using System.Data.Common;
 
-using Ecommerce.Infrastructure_DAL_.Repositories;
+namespace Ecommerce.Infrastructure_DAL_.Repositories;
 
 public class AddressRepository : IAddressRepository
 {
@@ -12,54 +11,85 @@ public class AddressRepository : IAddressRepository
 
     public AddressRepository(IDbConnectionFactory connectionFactory)
     {
-        _connectionFactory = connectionFactory;
+        _connectionFactory = connectionFactory
+            ?? throw new ArgumentNullException(nameof(connectionFactory));
     }
 
     public async Task<Address?> GetByIdAsync(long addressId)
     {
-        using var connection = _connectionFactory.CreateConnection();
-        const string sql = @"
-            SELECT AddressId, UserId, Label, City, Street, Phone, BuildingDetails, IsDefault
-            FROM dbo.Addresses
-            WHERE AddressId = @AddressId";
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(addressId);
 
-        return await connection.QueryFirstOrDefaultAsync<Address>(sql, new { AddressId = addressId });
+        using var connection = _connectionFactory.CreateConnection();
+
+        const string sql = """
+            SELECT AddressId, UserId, Label, City, Street,
+                   Phone, BuildingDetails, IsDefault
+            FROM dbo.Addresses
+            WHERE AddressId = @AddressId;
+            """;
+
+        return await connection.QuerySingleOrDefaultAsync<Address>(
+            sql, new { AddressId = addressId });
     }
 
     public async Task<IEnumerable<Address>> GetByUserIdAsync(long userId)
     {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(userId);
+
         using var connection = _connectionFactory.CreateConnection();
-        const string sql = @"
-            SELECT AddressId, UserId, Label, City, Street, Phone, BuildingDetails, IsDefault
+
+        const string sql = """
+            SELECT AddressId, UserId, Label, City, Street,
+                   Phone, BuildingDetails, IsDefault
             FROM dbo.Addresses
             WHERE UserId = @UserId
-            ORDER BY IsDefault DESC, AddressId DESC";
+            ORDER BY IsDefault DESC, AddressId DESC;
+            """;
 
-        return await connection.QueryAsync<Address>(sql, new { UserId = userId });
+        return await connection.QueryAsync<Address>(
+            sql, new { UserId = userId });
     }
 
     public async Task<long> CreateAsync(Address address)
     {
+        ArgumentNullException.ThrowIfNull(address);
+
         using var connection = _connectionFactory.CreateConnection();
 
         const string sql = """
-        IF (@IsDefault = 1)
-        BEGIN
-            UPDATE dbo.Addresses
-            SET IsDefault = 0
-            WHERE UserId = @UserId
-              AND IsDefault = 1;
-        END;
+            DECLARE @HasAddresses BIT;
 
-        INSERT INTO dbo.Addresses
-            (UserId, Label, City, Street, Phone,
-             BuildingDetails, IsDefault)
-        VALUES
-            (@UserId, @Label, @City, @Street, @Phone,
-             @BuildingDetails, @IsDefault);
+            SELECT @HasAddresses = CASE WHEN EXISTS
+            (
+                SELECT 1
+                FROM dbo.Addresses WITH (UPDLOCK, HOLDLOCK)
+                WHERE UserId = @UserId
+            )
+            THEN 1 ELSE 0 END;
 
-        SELECT CAST(SCOPE_IDENTITY() AS BIGINT);
-        """;
+            IF (@IsDefault = 1 OR @HasAddresses = 0)
+            BEGIN
+                UPDATE dbo.Addresses
+                SET IsDefault = 0
+                WHERE UserId = @UserId
+                  AND IsDefault = 1;
+            END;
+
+            INSERT INTO dbo.Addresses
+            (
+                UserId, Label, City, Street, Phone,
+                BuildingDetails, IsDefault
+            )
+            VALUES
+            (
+                @UserId, @Label, @City, @Street, @Phone,
+                @BuildingDetails,
+                CASE WHEN @IsDefault = 1 OR @HasAddresses = 0
+                     THEN 1 ELSE 0 END
+            );
+
+            SELECT CAST(SCOPE_IDENTITY() AS BIGINT);
+            """;
 
         return await DbTransactionHelper.ExecuteAsync(
             connection,
@@ -74,86 +104,102 @@ public class AddressRepository : IAddressRepository
 
     public async Task<bool> UpdateAsync(Address address)
     {
+        ArgumentNullException.ThrowIfNull(address);
+
         using var connection = _connectionFactory.CreateConnection();
 
         const string sql = """
-        UPDATE dbo.Addresses
-        SET Label = @Label,
-            City = @City,
-            Street = @Street,
-            Phone = @Phone,
-            BuildingDetails = @BuildingDetails,
-            IsDefault = @IsDefault
-        WHERE AddressId = @AddressId
-          AND UserId = @UserId;
-
-        IF @@ROWCOUNT = 0
-            RETURN;
-
-        IF (@IsDefault = 1)
-        BEGIN
             UPDATE dbo.Addresses
-            SET IsDefault = 0
-            WHERE UserId = @UserId
-              AND IsDefault = 1
-              AND AddressId <> @AddressId;
-        END;
-        """;
-
-        return await DbTransactionHelper.ExecuteAsync(
-            connection,
-            async (db, transaction, cancellationToken) =>
-            {
-                var rowsAffected = await db.ExecuteAsync(
-                    new CommandDefinition(
-                        sql,
-                        address,
-                        transaction: transaction,
-                        cancellationToken: cancellationToken));
-
-                return rowsAffected > 0;
-            });
-    }
-
-    public async Task<bool> DeleteAsync(long addressId, long userId)
-    {
-        using var connection = _connectionFactory.CreateConnection();
-        const string sql = "DELETE FROM dbo.Addresses WHERE AddressId = @AddressId AND UserId = @UserId";
-
-        int rowsAffected = await connection.ExecuteAsync(sql, new { AddressId = addressId, UserId = userId });
-        return rowsAffected > 0;
-    }
-
-
-    public async Task<bool> SetDefaultAddressAsync(long addressId, long userId)
-    { // زهقان اعدلها 
-        using var connection = _connectionFactory.CreateConnection();
-
-        await ((DbConnection)connection).OpenAsync();
-
-        using var transaction = connection.BeginTransaction();
-
-        try
-        {
-            const string checkSql = """
-            SELECT COUNT(1)
-            FROM dbo.Addresses
+            SET Label = @Label,
+                City = @City,
+                Street = @Street,
+                Phone = @Phone,
+                BuildingDetails = @BuildingDetails
             WHERE AddressId = @AddressId
               AND UserId = @UserId;
             """;
 
-            var exists = await connection.ExecuteScalarAsync<int>(
-                checkSql,
-                new { AddressId = addressId, UserId = userId },
-                transaction);
+        int rowsAffected = await connection.ExecuteAsync(sql, address);
 
-            if (exists == 0)
-            {
-                transaction.Rollback();
-                return false;
-            }
+        return rowsAffected > 0;
+    }
 
-            const string updateSql = """
+    public async Task<bool> DeleteAsync(long addressId, long userId)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(addressId);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(userId);
+
+        using var connection = _connectionFactory.CreateConnection();
+
+        const string sql = """
+            DECLARE @WasDefault BIT;
+            DECLARE @NextAddressId BIGINT;
+
+            SELECT @WasDefault = IsDefault
+            FROM dbo.Addresses WITH (UPDLOCK, HOLDLOCK)
+            WHERE AddressId = @AddressId
+              AND UserId = @UserId;
+
+            IF @WasDefault IS NULL
+            BEGIN
+                SELECT 0;
+                RETURN;
+            END;
+
+            DELETE FROM dbo.Addresses
+            WHERE AddressId = @AddressId
+              AND UserId = @UserId;
+
+            IF @WasDefault = 1
+            BEGIN
+                SELECT TOP 1 @NextAddressId = AddressId
+                FROM dbo.Addresses
+                WHERE UserId = @UserId
+                ORDER BY AddressId DESC;
+
+                IF @NextAddressId IS NOT NULL
+                BEGIN
+                    UPDATE dbo.Addresses
+                    SET IsDefault = 1
+                    WHERE AddressId = @NextAddressId
+                      AND UserId = @UserId;
+                END;
+            END;
+
+            SELECT 1;
+            """;
+
+        return await DbTransactionHelper.ExecuteAsync(
+            connection,
+            (db, transaction, cancellationToken) =>
+                db.ExecuteScalarAsync<int>(
+                    new CommandDefinition(
+                        sql,
+                        new { AddressId = addressId, UserId = userId },
+                        transaction: transaction,
+                        cancellationToken: cancellationToken))) == 1;
+    }
+
+    public async Task<bool> SetDefaultAddressAsync(long addressId,long userId)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(addressId);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(userId);
+
+        using var connection = _connectionFactory.CreateConnection();
+
+        const string sql = """
+            IF NOT EXISTS
+            (
+                SELECT 1
+                FROM dbo.Addresses WITH (UPDLOCK, HOLDLOCK)
+                WHERE AddressId = @AddressId
+                  AND UserId = @UserId
+            )
+            BEGIN
+                SELECT 0;
+                RETURN;
+            END;
+
             UPDATE dbo.Addresses
             SET IsDefault = 0
             WHERE UserId = @UserId
@@ -163,21 +209,18 @@ public class AddressRepository : IAddressRepository
             SET IsDefault = 1
             WHERE AddressId = @AddressId
               AND UserId = @UserId;
+
+            SELECT 1;
             """;
 
-            await connection.ExecuteAsync(
-                updateSql,
-                new { AddressId = addressId, UserId = userId },
-                transaction);
-
-            transaction.Commit();
-            return true;
-        }
-        catch
-        {
-            transaction.Rollback();
-            throw;
-        }
+        return await DbTransactionHelper.ExecuteAsync(
+            connection,
+            (db, transaction, cancellationToken) =>
+                db.ExecuteScalarAsync<int>(
+                    new CommandDefinition(
+                        sql,
+                        new { AddressId = addressId, UserId = userId },
+                        transaction: transaction,
+                        cancellationToken: cancellationToken))) == 1;
     }
-
 }
