@@ -4,7 +4,8 @@ using Ecommerce.Core.Interfaces;
 using Ecommerce.Infrastructure_DAL_.Data;
 using System.Data.Common;
 
-using Ecommerce.Infrastructure_DAL_.Repositories;
+namespace Ecommerce.Infrastructure_DAL_.Repositories;
+
 
 public class CartRepository : ICartRepository
 {
