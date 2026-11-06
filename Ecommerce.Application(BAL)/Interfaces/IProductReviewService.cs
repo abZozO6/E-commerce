@@ -23,4 +23,6 @@ public interface IProductReviewService
     Task<bool> UpdateAsync(long productId,long reviewId,long userId, UpdateProductReviewDto dto);
 
     Task<bool> DeleteAsync(long productId,long reviewId,long userId,bool isAdmin = false);
+
+    Task<IEnumerable<ProductReviewDetailsDto>> GetDetailsByProductIdAsync(long productId);
 }

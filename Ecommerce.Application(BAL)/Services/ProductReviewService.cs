@@ -171,6 +171,25 @@ public class ProductReviewService : IProductReviewService
             isAdmin);
     }
 
+
+    public async Task<IEnumerable<ProductReviewDetailsDto>> GetDetailsByProductIdAsync(long productId)
+    {
+        if (productId <= 0)
+            throw new ArgumentException("Invalid product ID.");
+
+        var reviews = await _reviewRepository.GetDetailsByProductIdAsync(productId);
+
+        return reviews.Select(review => new ProductReviewDetailsDto
+        {
+            ReviewId = review.ReviewId,
+            ProductId = review.ProductId,
+            UserId = review.UserId,
+            Rating = review.Rating,
+            Comment = review.Comment,
+            CreatedAt = review.CreatedAt,
+            UserFullName = review.UserFullName
+        });
+    }
     private async Task EnsureProductExistsAsync(long productId)
     {
         if (productId <= 0)

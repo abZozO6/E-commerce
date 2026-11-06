@@ -125,9 +125,7 @@ public class ProductRepository : IProductRepository
     /// <summary>
     /// Checks whether another product already uses the supplied slug.
     /// </summary>
-    public async Task<bool> ExistsBySlugAsync(
-        string slug,
-        long? excludeProductId = null)
+    public async Task<bool> ExistsBySlugAsync(string slug,long? excludeProductId = null)
     {
         using var connection = _connectionFactory.CreateConnection();
 
@@ -414,9 +412,7 @@ public class ProductRepository : IProductRepository
     /// <summary>
     /// Activates or deactivates a product.
     /// </summary>
-    public async Task<bool> SetActiveStatusAsync(
-        long productId,
-        bool isActive)
+    public async Task<bool> SetActiveStatusAsync(long productId,bool isActive)
     {
         using var connection = _connectionFactory.CreateConnection();
 
@@ -432,5 +428,50 @@ public class ProductRepository : IProductRepository
         });
 
         return rowsAffected > 0;
+    }
+
+
+    public async Task<ProductDetails?> GetDetailsByIdAsync(long productId)
+    {
+        using var connection = _connectionFactory.CreateConnection();
+
+        const string sql = """
+        SELECT
+            p.ProductId,
+            p.BrandId,
+            p.CategoryId,
+            p.Name,
+            p.Slug,
+            p.SKU,
+            p.Description,
+            p.Price,
+            p.StockQuantity,
+            p.WarrantyMonths,
+            p.IsActive,
+            p.CreatedAt,
+            p.RowVersion,
+
+            c.Name AS CategoryName,
+            b.Name AS BrandName,
+            pi.ImageUrl
+
+        FROM dbo.Products p
+
+        INNER JOIN dbo.Categories c
+            ON p.CategoryId = c.CategoryId
+
+        LEFT JOIN dbo.Brands b
+            ON p.BrandId = b.BrandId
+
+        LEFT JOIN dbo.ProductImages pi
+            ON p.ProductId = pi.ProductId
+            AND pi.IsPrimary = 1
+
+        WHERE p.ProductId = @ProductId;
+        """;
+
+        return await connection.QuerySingleOrDefaultAsync<ProductDetails>(
+            sql,
+            new { ProductId = productId });
     }
 }

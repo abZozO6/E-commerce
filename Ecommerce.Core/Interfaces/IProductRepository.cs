@@ -33,4 +33,7 @@ public interface IProductRepository
         byte[] rowVersion);
 
     Task<bool> SetActiveStatusAsync(long productId, bool isActive);
+
+
+    Task<ProductDetails?> GetDetailsByIdAsync(long productId);
 }

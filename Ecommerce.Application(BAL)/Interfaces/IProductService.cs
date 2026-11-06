@@ -24,4 +24,7 @@ public interface IProductService
     Task<bool> AdjustStockAsync(long productId, AdjustStockDto dto);
 
     Task<bool> SetActiveStatusAsync(long productId, bool isActive);
+
+
+    Task<ProductDetailsDto?> GetDetailsByIdAsync(long productId);
 }

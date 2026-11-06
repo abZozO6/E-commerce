@@ -56,9 +56,7 @@ public class CartItemService : ICartItemService
     /// <summary>
     /// Adds a product to the user's cart or increments its quantity.
     /// </summary>
-    public async Task<CartItemDto> AddItemAsync(
-        long userId,
-        AddCartItemDto dto)
+    public async Task<CartItemDto> AddItemAsync(long userId,AddCartItemDto dto)
     {
         await EnsureUserExistsAsync(userId);
 
@@ -167,9 +165,7 @@ public class CartItemService : ICartItemService
     /// <summary>
     /// Removes an item from the user's cart.
     /// </summary>
-    public async Task<bool> RemoveItemAsync(
-        long userId,
-        long cartItemId)
+    public async Task<bool> RemoveItemAsync(long userId,long cartItemId)
     {
         await EnsureUserExistsAsync(userId);
 
@@ -198,6 +194,30 @@ public class CartItemService : ICartItemService
             return false;
 
         return await _cartItemRepository.ClearCartAsync(cart.CartId);
+    }
+
+    public async Task<IEnumerable<CartItemDetailsDto>> GetMyCartDetailsAsync(long userId)
+    {
+        await EnsureUserExistsAsync(userId);
+
+        var cart = await _cartRepository.GetByUserIdAsync(userId);
+
+        if (cart is null)
+            return Enumerable.Empty<CartItemDetailsDto>();
+
+        var items = await _cartItemRepository.GetDetailsByCartIdAsync(cart.CartId);
+
+        return items.Select(item => new CartItemDetailsDto
+        {
+            CartItemId = item.CartItemId,
+            CartId = item.CartId,
+            ProductId = item.ProductId,
+            Quantity = item.Quantity,
+            AddedAt = item.AddedAt,
+            ProductName = item.ProductName,
+            UnitPrice = item.UnitPrice,
+            ImageUrl = item.ImageUrl
+        });
     }
 
     private async Task EnsureUserExistsAsync(long userId)

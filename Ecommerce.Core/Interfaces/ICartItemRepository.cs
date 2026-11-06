@@ -19,4 +19,7 @@ public interface ICartItemRepository
     Task<bool> DeleteAsync(long cartItemId, long cartId);
 
     Task<bool> ClearCartAsync(long cartId);
+
+
+    Task<IEnumerable<CartItemDetails>> GetDetailsByCartIdAsync(long cartId);
 }

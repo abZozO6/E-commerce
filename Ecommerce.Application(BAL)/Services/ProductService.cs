@@ -132,9 +132,7 @@ public class ProductService : IProductService
         return MapToDto(createdProduct);
     }
 
-    public async Task<bool> UpdateAsync(
-        long productId,
-        UpdateProductDto dto)
+    public async Task<bool> UpdateAsync(long productId,UpdateProductDto dto)
     {
         if (productId <= 0)
             throw new ArgumentException("Invalid product ID.");
@@ -180,9 +178,7 @@ public class ProductService : IProductService
         return true;
     }
 
-    public async Task<bool> AdjustStockAsync(
-        long productId,
-        AdjustStockDto dto)
+    public async Task<bool> AdjustStockAsync(long productId,AdjustStockDto dto)
     {
         if (productId <= 0)
             throw new ArgumentException("Invalid product ID.");
@@ -239,9 +235,7 @@ public class ProductService : IProductService
         return true;
     }
 
-    public async Task<bool> SetActiveStatusAsync(
-        long productId,
-        bool isActive)
+    public async Task<bool> SetActiveStatusAsync(long productId,bool isActive)
     {
         if (productId <= 0)
             throw new ArgumentException("Invalid product ID.");
@@ -251,9 +245,7 @@ public class ProductService : IProductService
             isActive);
     }
 
-    private async Task ValidateCategoryAndBrandAsync(
-        long categoryId,
-        long? brandId)
+    private async Task ValidateCategoryAndBrandAsync(long categoryId,long? brandId)
     {
         if (categoryId <= 0)
             throw new ArgumentException("Invalid category ID.");
@@ -283,6 +275,38 @@ public class ProductService : IProductService
         }
     }
 
+    public async Task<ProductDetailsDto?> GetDetailsByIdAsync(long productId)
+    {
+        if (productId <= 0)
+            throw new ArgumentException("Invalid product ID.");
+
+        var product = await _productRepository.GetDetailsByIdAsync(productId);
+
+        if (product is null)
+            return null;
+
+        return new ProductDetailsDto
+        {
+            ProductId = product.ProductId,
+            BrandId = product.BrandId,
+            CategoryId = product.CategoryId,
+            Name = product.Name,
+            Slug = product.Slug,
+            SKU = product.SKU,
+            Description = product.Description,
+            Price = product.Price,
+            StockQuantity = product.StockQuantity,
+            WarrantyMonths = product.WarrantyMonths,
+            IsActive = product.IsActive,
+            CreatedAt = product.CreatedAt,
+            RowVersion = Convert.ToBase64String(product.RowVersion),
+
+            CategoryName = product.CategoryName,
+            BrandName = product.BrandName,
+            ImageUrl = product.ImageUrl
+        };
+    }
+
     private static string ValidateAndNormalizeName(string name)
     {
         if (string.IsNullOrWhiteSpace(name))
@@ -297,10 +321,7 @@ public class ProductService : IProductService
         return name;
     }
 
-    private static void ValidatePricingAndWarranty(
-        decimal price,
-        int? warrantyMonths,
-        int stockQuantity)
+    private static void ValidatePricingAndWarranty(decimal price, int? warrantyMonths,int stockQuantity)
     {
         if (price < 0)
             throw new ArgumentException(

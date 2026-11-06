@@ -204,4 +204,34 @@ public class CartItemRepository : ICartItemRepository
                         cancellationToken: cancellationToken)));
     }
 
+
+    public async Task<IEnumerable<CartItemDetails>> GetDetailsByCartIdAsync(long cartId)
+    {
+        using var connection = _connectionFactory.CreateConnection();
+
+        const string sql = """
+        SELECT
+            ci.CartItemId,
+            ci.CartId,
+            ci.ProductId,
+            ci.Quantity,
+            ci.AddedAt,
+            p.Name AS ProductName,
+            p.Price AS UnitPrice,
+            pi.ImageUrl
+        FROM dbo.CartItems ci
+        INNER JOIN dbo.Products p
+            ON ci.ProductId = p.ProductId
+        LEFT JOIN dbo.ProductImages pi
+            ON p.ProductId = pi.ProductId
+            AND pi.IsPrimary = 1
+        WHERE ci.CartId = @CartId
+        ORDER BY ci.AddedAt DESC;
+        """;
+
+        return await connection.QueryAsync<CartItemDetails>(
+            sql,
+            new { CartId = cartId });
+    }
+
 }

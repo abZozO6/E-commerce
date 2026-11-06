@@ -21,4 +21,7 @@ public interface IProductReviewRepository
     Task<bool> UpdateAsync(ProductReview review);
 
     Task<bool> DeleteAsync(long reviewId, long userId, bool isAdmin = false);
+
+
+    Task<IEnumerable<ProductReviewDetails>> GetDetailsByProductIdAsync(long productId);
 }

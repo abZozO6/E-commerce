@@ -12,6 +12,9 @@ public interface ICartItemService
 {
     Task<IEnumerable<CartItemDto>> GetMyCartItemsAsync(long userId);
 
+
+    Task<IEnumerable<CartItemDetailsDto>> GetMyCartDetailsAsync(long userId);
+
     Task<CartItemDto> AddItemAsync(long userId, AddCartItemDto dto);
 
     Task<bool> UpdateQuantityAsync(long userId,long cartItemId,UpdateCartItemQuantityDto dto);

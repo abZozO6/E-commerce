@@ -174,6 +174,32 @@ public class ProductReviewRepository : IProductReviewRepository
         return rowsAffected > 0;
     }
 
+    public async Task<IEnumerable<ProductReviewDetails>> GetDetailsByProductIdAsync(long productId)
+    {
+        using var connection = _connectionFactory.CreateConnection();
+
+        const string sql = """
+        SELECT
+            pr.ReviewId,
+            pr.ProductId,
+            pr.UserId,
+            pr.Rating,
+            pr.Comment,
+            pr.CreatedAt,
+            u.FullName AS UserFullName
+        FROM dbo.ProductReviews pr
+        INNER JOIN dbo.Users u
+            ON pr.UserId = u.UserId
+        WHERE pr.ProductId = @ProductId
+          AND u.IsDeleted = 0
+        ORDER BY pr.CreatedAt DESC;
+        """;
+
+        return await connection.QueryAsync<ProductReviewDetails>(
+            sql,
+            new { ProductId = productId });
+    }
+
     private static void ValidateReview(ProductReview review)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(review.ProductId);
