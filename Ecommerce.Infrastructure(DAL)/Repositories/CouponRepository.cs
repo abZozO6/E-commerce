@@ -3,8 +3,7 @@ using Ecommerce.Core.Entities;
 using Ecommerce.Core.Interfaces;
 using Ecommerce.Infrastructure_DAL_.Data;
 
-using Ecommerce.Infrastructure_DAL_.Repositories;
-
+namespace Ecommerce.Infrastructure_DAL_.Repositories;
 public class CouponRepository : ICouponRepository
 {
     private readonly IDbConnectionFactory _connectionFactory;
@@ -165,7 +164,12 @@ public class CouponRepository : ICouponRepository
 
         const string sql = """
             DELETE FROM dbo.Coupons
-            WHERE CouponId = @CouponId;
+            WHERE CouponId = @CouponId
+            AND NOT EXISTS (
+                SELECT 1
+                FROM dbo.Orders
+                WHERE CouponId = @CouponId
+            );
             """;
 
         var rowsAffected = await connection.ExecuteAsync(

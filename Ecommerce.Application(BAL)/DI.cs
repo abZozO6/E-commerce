@@ -29,6 +29,8 @@ namespace Ecommerce.Application_BAL_
 
             services.AddScoped<ICartService, CartService>();
 
+            services.AddScoped<ICouponService, CouponService>();
+
             return services;
         }
 
