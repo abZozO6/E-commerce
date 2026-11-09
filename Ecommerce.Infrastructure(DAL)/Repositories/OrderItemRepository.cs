@@ -19,10 +19,11 @@ public class OrderItemRepository : IOrderItemRepository
         using var connection = _connectionFactory.CreateConnection();
 
         const string sql = """
-            SELECT OrderItemId, OrderId, ProductId, ProductName,
-            SKU, UnitPrice, Quantity, LineTotal
-            WHERE OrderItemId = @OrderItemId;
-            """;
+        SELECT OrderItemId, OrderId, ProductId, ProductName,
+               SKU, UnitPrice, Quantity, LineTotal
+        FROM dbo.OrderItems
+        WHERE OrderItemId = @OrderItemId;
+        """;
 
         return await connection.QuerySingleOrDefaultAsync<OrderItem>(
             sql,
@@ -35,6 +36,10 @@ public class OrderItemRepository : IOrderItemRepository
     /// </summary>
     public async Task<IEnumerable<OrderItem>> GetByOrderIdAsync(long orderId)
     {
+
+        if (orderId <= 0)
+            throw new ArgumentOutOfRangeException(nameof(orderId));
+
         using var connection = _connectionFactory.CreateConnection();
 
         const string sql = """
@@ -65,6 +70,9 @@ public class OrderItemRepository : IOrderItemRepository
             throw new ArgumentOutOfRangeException(
                 nameof(item.UnitPrice), "Unit price cannot be negative.");
 
+        if (item.OrderItemId <= 0)
+            throw new ArgumentOutOfRangeException(nameof(item.OrderItemId));
+
         item.LineTotal = item.UnitPrice * item.Quantity;
 
         using var connection = _connectionFactory.CreateConnection();
@@ -91,6 +99,13 @@ public class OrderItemRepository : IOrderItemRepository
     /// </summary>
     public async Task<bool> HasUserPurchasedProductAsync(long userId,long productId)
     {
+        if (userId <= 0)
+            throw new ArgumentOutOfRangeException(nameof(userId));
+
+        if (productId <= 0)
+            throw new ArgumentOutOfRangeException(nameof(productId));
+
+
         using var connection = _connectionFactory.CreateConnection();
 
         const string sql = """

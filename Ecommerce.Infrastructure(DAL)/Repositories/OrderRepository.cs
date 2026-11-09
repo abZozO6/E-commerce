@@ -238,17 +238,111 @@ public class OrderRepository : IOrderRepository
                     requested.Quantity));
             }
 
-            // Recalculate monetary totals using database prices, not client-supplied item prices.
+            // Recalculate monetary totals using trusted database prices.
+            // Never trust a discount amount supplied by the caller.
             var subtotal = verifiedItems.Sum(x => x.UnitPrice * x.Quantity);
-
-            if (order.DiscountAmount < 0 || order.DiscountAmount > subtotal)
-                throw new InvalidOperationException("The discount amount is invalid for this order.");
 
             if (order.ShippingCost < 0)
                 throw new InvalidOperationException("Shipping cost cannot be negative.");
 
+            decimal discountAmount = 0;
+
+            if (order.CouponId.HasValue)
+            {
+                // Lock the coupon row first. Concurrent checkouts using the same
+                // coupon must wait until this transaction commits or rolls back.
+                const string couponSql = """
+                    SELECT
+                        CouponId,
+                        DiscountType,
+                        DiscountValue,
+                        MinOrderAmount,
+                        MaxDiscountAmount,
+                        StartsAt,
+                        ExpiresAt,
+                        UsageLimit,
+                        IsActive
+                    FROM dbo.Coupons WITH (UPDLOCK, HOLDLOCK)
+                    WHERE CouponId = @CouponId;
+                    """;
+
+                var coupon = await connection.QuerySingleOrDefaultAsync<CouponSnapshot>(
+                    couponSql,
+                    new { CouponId = order.CouponId.Value },
+                    transaction);
+
+                if (coupon is null)
+                    throw new InvalidOperationException("Coupon does not exist.");
+
+                if (!coupon.IsActive)
+                    throw new InvalidOperationException("Coupon is inactive.");
+
+                // Coupon dates are expected to be stored in UTC.
+                var now = DateTime.UtcNow;
+
+                if (now < coupon.StartsAt || now > coupon.ExpiresAt)
+                    throw new InvalidOperationException("Coupon is outside its validity period.");
+
+                if (subtotal < coupon.MinOrderAmount)
+                    throw new InvalidOperationException(
+                        "Order amount does not meet the coupon minimum.");
+
+                // Count every order using this coupon except cancelled orders.
+                // This query runs after acquiring the coupon row lock.
+                const string usageCountSql = """
+                    SELECT COUNT_BIG(*)
+                    FROM dbo.Orders
+                    WHERE CouponId = @CouponId
+                      AND Status <> 'Cancelled';
+                    """;
+
+                var usageCount = await connection.ExecuteScalarAsync<long>(
+                    usageCountSql,
+                    new { CouponId = coupon.CouponId },
+                    transaction);
+
+                if (coupon.UsageLimit.HasValue && usageCount >= coupon.UsageLimit.Value)
+                    throw new InvalidOperationException("Coupon usage limit has been reached.");
+
+                if (coupon.DiscountValue <= 0)
+                    throw new InvalidOperationException("Coupon discount value must be greater than zero.");
+
+                if (coupon.DiscountType.Equals("Percentage", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (coupon.DiscountValue > 100)
+                        throw new InvalidOperationException("Percentage discount cannot exceed 100.");
+
+                    discountAmount = subtotal * coupon.DiscountValue / 100m;
+                }
+                else if (coupon.DiscountType.Equals("Fixed", StringComparison.OrdinalIgnoreCase))
+                {
+                    discountAmount = coupon.DiscountValue;
+                }
+                else
+                {
+                    throw new InvalidOperationException("Unsupported coupon discount type.");
+                }
+
+                if (coupon.MaxDiscountAmount.HasValue)
+                {
+                    if (coupon.MaxDiscountAmount.Value <= 0)
+                        throw new InvalidOperationException("Maximum discount amount must be greater than zero.");
+
+                    discountAmount = Math.Min(discountAmount, coupon.MaxDiscountAmount.Value);
+                }
+
+                // A discount cannot exceed the order subtotal.
+                discountAmount = Math.Min(discountAmount, subtotal);
+                discountAmount = decimal.Round(
+                    discountAmount,
+                    2,
+                    MidpointRounding.AwayFromZero);
+            }
+
+            // Without a coupon, the discount is always zero.
             order.Subtotal = subtotal;
-            order.TotalAmount = subtotal - order.DiscountAmount + order.ShippingCost;
+            order.DiscountAmount = discountAmount;
+            order.TotalAmount = subtotal - discountAmount + order.ShippingCost;
 
             // New orders must start in Pending state; callers cannot choose an arbitrary initial status.
             order.Status = "Pending";
@@ -405,12 +499,12 @@ public class OrderRepository : IOrderRepository
             SET Status = @Status
             WHERE OrderId = @OrderId
               AND (
-                    (Status = 'Pending' AND @Status IN ('Confirmed', 'Processing', 'Cancelled'))
-                 OR (Status = 'Confirmed' AND @Status IN ('Processing', 'Cancelled'))
-                 OR (Status = 'Processing' AND @Status IN ('Shipped', 'Cancelled'))
-                 OR (Status = 'Shipped' AND @Status IN ('Delivered', 'Returned'))
-                 OR (Status = 'Delivered' AND @Status = 'Returned')
-              );
+                   (Status = 'Pending' AND @Status IN ('Confirmed', 'Processing'))
+                OR (Status = 'Confirmed' AND @Status = 'Processing')
+                OR (Status = 'Processing' AND @Status = 'Shipped')
+                OR (Status = 'Shipped' AND @Status IN ('Delivered', 'Returned'))
+                OR (Status = 'Delivered' AND @Status = 'Returned')
+            );
             """;
 
         var rowsAffected = await connection.ExecuteAsync(
@@ -424,7 +518,7 @@ public class OrderRepository : IOrderRepository
     /// Only the owner or an administrator may cancel; authorization must be based on trusted identity.
     /// Paid orders require a separate payment-refund workflow.
     /// </summary>
-    public async Task<bool> CancelOrderWithTransactionAsync(long orderId,long userId,bool isAdmin = false)
+    public async Task<bool> CancelOrderWithTransactionAsync(long orderId, long userId, bool isAdmin = false)
     {
         using var connection = _connectionFactory.CreateConnection();
         await connection.OpenAsync();
@@ -434,13 +528,13 @@ public class OrderRepository : IOrderRepository
         {
             // Atomically cancel only eligible orders that have not been paid.
             const string cancelOrderSql = """
-                UPDATE dbo.Orders
-                SET Status = 'Cancelled'
-                WHERE OrderId = @OrderId
-                  AND (@IsAdmin = 1 OR UserId = @UserId)
-                  AND Status IN ('Pending', 'Processing')
-                  AND PaymentStatus IN ('Pending', 'Failed');
-                """;
+                           UPDATE dbo.Orders
+                           SET Status = 'Cancelled'
+                           WHERE OrderId = @OrderId
+                           AND (@IsAdmin = 1 OR UserId = @UserId)
+                           AND Status IN ('Pending', 'Confirmed', 'Processing')
+                           AND PaymentStatus IN ('Pending', 'Failed');
+                          """;
 
             var rowsAffected = await connection.ExecuteAsync(
                 cancelOrderSql,
@@ -569,12 +663,24 @@ public class OrderRepository : IOrderRepository
     /// It uses trusted product details from the database instead of relying on
     /// client-provided prices, names, or SKUs before inserting the item into the order.
     /// </summary>
-
     private sealed record VerifiedOrderItem(
         long ProductId,
         string ProductName,
         string SKU,
         decimal UnitPrice,
         int Quantity);
+
+    private sealed class CouponSnapshot
+    {
+        public long CouponId { get; init; }
+        public string DiscountType { get; init; } = string.Empty;
+        public decimal DiscountValue { get; init; }
+        public decimal MinOrderAmount { get; init; }
+        public decimal? MaxDiscountAmount { get; init; }
+        public DateTime StartsAt { get; init; }
+        public DateTime ExpiresAt { get; init; }
+        public int? UsageLimit { get; init; }
+        public bool IsActive { get; init; }
+    }
 
 }
