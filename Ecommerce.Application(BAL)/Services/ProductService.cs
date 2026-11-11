@@ -94,6 +94,9 @@ public class ProductService : IProductService
         string name = ValidateAndNormalizeName(dto.Name);
         string slug = SlugGenerator.Generate(name);
 
+        if (slug.Length > 220)
+            throw new ArgumentException("Product slug cannot exceed 220 characters.");
+
         ValidatePricingAndWarranty(
             dto.Price,
             dto.WarrantyMonths,
@@ -202,6 +205,10 @@ public class ProductService : IProductService
         }
 
         byte[] rowVersionBytes = DecodeRowVersion(dto.RowVersion);
+        string? notes = NormalizeDescription(dto.Notes);
+
+        if (notes?.Length > 500)
+            throw new ArgumentException("Notes cannot exceed 500 characters.");
 
         var existingProduct = await _productRepository.GetByIdAsync(productId);
 
@@ -223,7 +230,7 @@ public class ProductService : IProductService
             productId,
             dto.QuantityChange,
             dto.TransactionType,
-            NormalizeDescription(dto.Notes),
+            notes,
             rowVersionBytes);
 
         if (!adjusted)

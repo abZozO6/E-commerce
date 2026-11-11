@@ -3,7 +3,7 @@ using Ecommerce.Core.Entities;
 using Ecommerce.Core.Interfaces;
 using Ecommerce.Infrastructure_DAL_.Data;
 
-using Ecommerce.Infrastructure_DAL_.Repositories;
+namespace Ecommerce.Infrastructure_DAL_.Repositories;
 
 public class OrderRepository : IOrderRepository
 {
@@ -102,7 +102,7 @@ public class OrderRepository : IOrderRepository
                 ShippingCity, ShippingStreet, ShippingBuildingDetails
             )
             VALUES (
-                @UserId, @CouponId, @Status, @SubTotal, @DiscountAmount,
+                @UserId, @CouponId, @Status, @Subtotal, @DiscountAmount,
                 @ShippingCost, @TotalAmount, @ShippingFullName, @ShippingPhone,
                 @ShippingCity, @ShippingStreet, @ShippingBuildingDetails
             );
@@ -355,7 +355,7 @@ public class OrderRepository : IOrderRepository
                     ShippingCity, ShippingStreet, ShippingBuildingDetails
                 )
                 VALUES (
-                    @UserId, @CouponId, @Status, @SubTotal, @DiscountAmount,
+                    @UserId, @CouponId, @Status, @Subtotal, @DiscountAmount,
                     @ShippingCost, @TotalAmount, @ShippingFullName, @ShippingPhone,
                     @ShippingCity, @ShippingStreet, @ShippingBuildingDetails
                 );

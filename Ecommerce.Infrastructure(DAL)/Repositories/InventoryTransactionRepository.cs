@@ -4,7 +4,7 @@ using Ecommerce.Core.Entities;
 using Ecommerce.Core.Interfaces;
 using Ecommerce.Infrastructure_DAL_.Data;
 
-using Ecommerce.Infrastructure_DAL_.Repositories;
+namespace Ecommerce.Infrastructure_DAL_.Repositories;
 
 public class InventoryTransactionRepository : IInventoryTransactionRepository
 {
@@ -37,8 +37,7 @@ public class InventoryTransactionRepository : IInventoryTransactionRepository
     /// <summary>
     /// Retrieves all inventory transactions for a specific product.
     /// </summary>
-    public async Task<IEnumerable<InventoryTransaction>> GetByProductIdAsync(
-        long productId)
+    public async Task<IEnumerable<InventoryTransaction>> GetByProductIdAsync(long productId)
     {
         using var connection = _connectionFactory.CreateConnection();
 
@@ -58,8 +57,7 @@ public class InventoryTransactionRepository : IInventoryTransactionRepository
     /// <summary>
     /// Retrieves all inventory transactions linked to a specific order.
     /// </summary>
-    public async Task<IEnumerable<InventoryTransaction>> GetByOrderIdAsync(
-        long orderId)
+    public async Task<IEnumerable<InventoryTransaction>> GetByOrderIdAsync(long orderId)
     {
         using var connection = _connectionFactory.CreateConnection();
 
@@ -98,7 +96,7 @@ public class InventoryTransactionRepository : IInventoryTransactionRepository
 
         ArgumentException.ThrowIfNullOrWhiteSpace(transaction.TransactionType);
 
-        var allowedTypes = new HashSet<string>
+        var allowedTypes = new HashSet<string>(StringComparer.Ordinal)
         {
             "Restock",
             "Sale",
@@ -110,6 +108,17 @@ public class InventoryTransactionRepository : IInventoryTransactionRepository
         {
             throw new ArgumentException(
                 "Invalid transaction type.",
+                nameof(transaction));
+        }
+
+        transaction.Notes = string.IsNullOrWhiteSpace(transaction.Notes)
+            ? null
+            : transaction.Notes.Trim();
+
+        if (transaction.Notes?.Length > 500)
+        {
+            throw new ArgumentException(
+                "Notes cannot exceed 500 characters.",
                 nameof(transaction));
         }
 
@@ -136,4 +145,5 @@ public class InventoryTransactionRepository : IInventoryTransactionRepository
 
         return await connection.ExecuteScalarAsync<long>(sql, transaction);
     }
+
 }

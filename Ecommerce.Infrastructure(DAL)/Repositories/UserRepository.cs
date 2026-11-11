@@ -3,7 +3,7 @@ using Ecommerce.Core.Entities;
 using Ecommerce.Core.Interfaces;
 using Ecommerce.Infrastructure_DAL_.Data;
 
-using Ecommerce.Infrastructure_DAL_.Repositories;
+namespace Ecommerce.Infrastructure_DAL_.Repositories;
 
 public class UserRepository : IUserRepository
 {
@@ -115,6 +115,26 @@ public class UserRepository : IUserRepository
         ArgumentException.ThrowIfNullOrWhiteSpace(user.PasswordHash);
         ArgumentException.ThrowIfNullOrWhiteSpace(user.Role);
 
+        var fullName = user.FullName.Trim();
+        var email = user.Email.Trim();
+
+        if (fullName.Length > 150)
+            throw new ArgumentException("Full name cannot exceed 150 characters.", nameof(user));
+
+        if (email.Length > 256)
+            throw new ArgumentException("Email cannot exceed 256 characters.", nameof(user));
+
+        if (user.PasswordHash.Length > 500)
+            throw new ArgumentException("Password hash cannot exceed 500 characters.", nameof(user));
+
+        var normalizedRole = user.Role.Trim();
+        if (!string.Equals(normalizedRole, "Customer", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(normalizedRole, "Admin", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException("The specified role is not supported.", nameof(user));
+        }
+        normalizedRole = string.Equals(normalizedRole, "Admin", StringComparison.OrdinalIgnoreCase) ? "Admin" : "Customer";
+
         using var connection = _connectionFactory.CreateConnection();
 
         const string sql = @"
@@ -129,10 +149,10 @@ public class UserRepository : IUserRepository
             sql,
             new
             {
-                FullName = user.FullName.Trim(),
-                Email = user.Email.Trim(),
+                FullName = fullName,
+                Email = email,
                 user.PasswordHash,
-                user.Role,
+                Role = normalizedRole,
                 user.IsActive
             });
     }
@@ -149,6 +169,15 @@ public class UserRepository : IUserRepository
         ArgumentException.ThrowIfNullOrWhiteSpace(user.FullName);
         ArgumentException.ThrowIfNullOrWhiteSpace(user.Email);
 
+        var fullName = user.FullName.Trim();
+        var email = user.Email.Trim();
+
+        if (fullName.Length > 150)
+            throw new ArgumentException("Full name cannot exceed 150 characters.", nameof(user));
+
+        if (email.Length > 256)
+            throw new ArgumentException("Email cannot exceed 256 characters.", nameof(user));
+
         using var connection = _connectionFactory.CreateConnection();
 
         const string sql = @"
@@ -163,8 +192,8 @@ public class UserRepository : IUserRepository
             new
             {
                 user.UserId,
-                FullName = user.FullName.Trim(),
-                Email = user.Email.Trim()
+                FullName = fullName,
+                Email = email
             });
 
         return rowsAffected > 0;

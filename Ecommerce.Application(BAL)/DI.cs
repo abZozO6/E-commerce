@@ -29,7 +29,15 @@ namespace Ecommerce.Application_BAL_
 
             services.AddScoped<ICartService, CartService>();
 
+            services.AddScoped<ICartItemService, CartItemService>();
+
             services.AddScoped<ICouponService, CouponService>();
+
+            services.AddScoped<IOrderService, OrderService>();
+
+            services.AddScoped<IInventoryTransactionService, InventoryTransactionService>();
+
+            services.AddScoped<IPaymentService, PaymentService>();
 
             return services;
         }

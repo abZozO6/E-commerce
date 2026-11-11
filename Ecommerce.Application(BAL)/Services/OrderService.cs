@@ -55,12 +55,7 @@ public class OrderService : IOrderService
         await EnsureUserExistsAsync(userId);
 
         var orders = await _orderRepository.GetByUserIdAsync(userId);
-        var result = new List<OrderDto>();
-
-        foreach (var order in orders)
-            result.Add(await MapToDtoAsync(order));
-
-        return result;
+        return await MapOrdersToDtosAsync(orders);
     }
 
     // Customer: retrieve one order only when it belongs to the current user.
@@ -83,12 +78,7 @@ public class OrderService : IOrderService
     public async Task<IEnumerable<OrderDto>> GetAllOrdersAsync(string? status = null)
     {
         var orders = await _orderRepository.GetAllAsync(status);
-        var result = new List<OrderDto>();
-
-        foreach (var order in orders)
-            result.Add(await MapToDtoAsync(order));
-
-        return result;
+        return await MapOrdersToDtosAsync(orders);
     }
 
     // Admin: retrieve any order by ID.
@@ -272,10 +262,30 @@ public class OrderService : IOrderService
             throw new KeyNotFoundException("User not found.");
     }
 
+    private async Task<IReadOnlyList<OrderDto>> MapOrdersToDtosAsync(IEnumerable<Order> orders)
+    {
+        var orderList = orders.ToList();
+        if (orderList.Count == 0)
+            return [];
+
+        var allItems = await _orderItemRepository.GetByOrderIdsAsync(
+            orderList.Select(o => o.OrderId));
+
+        var itemsByOrderId = allItems.ToLookup(item => item.OrderId);
+
+        return orderList
+            .Select(order => MapToDto(order, itemsByOrderId[order.OrderId]))
+            .ToList();
+    }
+
     private async Task<OrderDto> MapToDtoAsync(Order order)
     {
         var items = await _orderItemRepository.GetByOrderIdAsync(order.OrderId);
+        return MapToDto(order, items);
+    }
 
+    private static OrderDto MapToDto(Order order, IEnumerable<OrderItem> items)
+    {
         return new OrderDto
         {
             OrderId = order.OrderId,

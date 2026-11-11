@@ -154,8 +154,7 @@ public class CategoryRepository : ICategoryRepository
     public async Task<long> CreateAsync(Category category)
     {
         ArgumentNullException.ThrowIfNull(category);
-        ArgumentException.ThrowIfNullOrWhiteSpace(category.Name);
-        ArgumentException.ThrowIfNullOrWhiteSpace(category.Slug);
+        NormalizeAndValidate(category);
 
         if (category.ParentCategoryId == category.CategoryId &&
             category.CategoryId != 0)
@@ -181,8 +180,7 @@ public class CategoryRepository : ICategoryRepository
     public async Task<bool> UpdateAsync(Category category)
     {
         ArgumentNullException.ThrowIfNull(category);
-        ArgumentException.ThrowIfNullOrWhiteSpace(category.Name);
-        ArgumentException.ThrowIfNullOrWhiteSpace(category.Slug);
+        NormalizeAndValidate(category);
 
         if (category.ParentCategoryId == category.CategoryId)
         {
@@ -205,6 +203,21 @@ public class CategoryRepository : ICategoryRepository
         var rowsAffected = await connection.ExecuteAsync(sql, category);
 
         return rowsAffected > 0;
+    }
+
+    private static void NormalizeAndValidate(Category category)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(category.Name);
+        ArgumentException.ThrowIfNullOrWhiteSpace(category.Slug);
+
+        category.Name = category.Name.Trim();
+        category.Slug = category.Slug.Trim();
+
+        if (category.Name.Length > 100)
+            throw new ArgumentException("Category name cannot exceed 100 characters.", nameof(category));
+
+        if (category.Slug.Length > 120)
+            throw new ArgumentException("Category slug cannot exceed 120 characters.", nameof(category));
     }
 
     public async Task<bool> DeleteAsync(long categoryId)

@@ -90,7 +90,12 @@ public class CartItemRepository : ICartItemRepository
                 db.ExecuteScalarAsync<long>(
                     new CommandDefinition(
                         sql,
-                        item,
+                        new
+                        {
+                            item.CartId,
+                            item.ProductId,
+                            item.Quantity
+                        },
                         transaction: transaction,
                         cancellationToken: cancellationToken)));
     }

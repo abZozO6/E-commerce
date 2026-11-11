@@ -4,6 +4,8 @@ using Ecommerce.Core.Interfaces;
 using Ecommerce.Infrastructure_DAL_.Data;
 using System.Data;
 
+namespace Ecommerce.Infrastructure_DAL_.Repositories;
+
 public class ProductRepository : IProductRepository
 {
     private readonly IDbConnectionFactory _connectionFactory;
@@ -338,6 +340,15 @@ public class ProductRepository : IProductRepository
             throw new ArgumentException(
                 "Return transactions must increase stock.",
                 nameof(quantityChange));
+        }
+
+        notes = string.IsNullOrWhiteSpace(notes) ? null : notes.Trim();
+
+        if (notes?.Length > 500)
+        {
+            throw new ArgumentException(
+                "Notes cannot exceed 500 characters.",
+                nameof(notes));
         }
 
         using var connection = _connectionFactory.CreateConnection();

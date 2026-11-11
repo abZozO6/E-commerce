@@ -129,6 +129,9 @@ public class BrandRepository : IBrandRepository
     /// </summary>
     public async Task<long> CreateAsync(Brand brand)
     {
+        ArgumentNullException.ThrowIfNull(brand);
+        NormalizeAndValidate(brand);
+
         using var connection = _connectionFactory.CreateConnection();
 
         const string sql = """
@@ -149,6 +152,9 @@ public class BrandRepository : IBrandRepository
     /// </summary>
     public async Task<bool> UpdateAsync(Brand brand)
     {
+        ArgumentNullException.ThrowIfNull(brand);
+        NormalizeAndValidate(brand);
+
         using var connection = _connectionFactory.CreateConnection();
 
         const string sql = """
@@ -164,6 +170,25 @@ public class BrandRepository : IBrandRepository
         int rowsAffected = await connection.ExecuteAsync(sql, brand);
 
         return rowsAffected > 0;
+    }
+
+    private static void NormalizeAndValidate(Brand brand)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(brand.Name);
+        ArgumentException.ThrowIfNullOrWhiteSpace(brand.Slug);
+
+        brand.Name = brand.Name.Trim();
+        brand.Slug = brand.Slug.Trim();
+        brand.LogoUrl = string.IsNullOrWhiteSpace(brand.LogoUrl) ? null : brand.LogoUrl.Trim();
+
+        if (brand.Name.Length > 100)
+            throw new ArgumentException("Brand name cannot exceed 100 characters.", nameof(brand));
+
+        if (brand.Slug.Length > 120)
+            throw new ArgumentException("Brand slug cannot exceed 120 characters.", nameof(brand));
+
+        if (brand.LogoUrl?.Length > 1000)
+            throw new ArgumentException("Logo URL cannot exceed 1000 characters.", nameof(brand));
     }
 
     /// <summary>

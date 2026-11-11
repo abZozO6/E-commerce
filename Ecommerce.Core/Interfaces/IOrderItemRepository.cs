@@ -10,6 +10,8 @@ public interface IOrderItemRepository
 
     Task<IEnumerable<OrderItem>> GetByOrderIdAsync(long orderId);
 
+    Task<IEnumerable<OrderItem>> GetByOrderIdsAsync(IEnumerable<long> orderIds);
+
     Task<long> CreateAsync(OrderItem item);
 
     Task<bool> HasUserPurchasedProductAsync(long userId, long productId);

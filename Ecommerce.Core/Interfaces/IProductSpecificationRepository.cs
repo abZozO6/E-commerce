@@ -2,8 +2,6 @@ using System.Collections.Generic;
 using System.Threading.Tasks;
 using Ecommerce.Core.Entities;
 
-using Ecommerce.Core.Entities;
-
 namespace Ecommerce.Core.Interfaces;
 
 public interface IProductSpecificationRepository

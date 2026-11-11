@@ -104,6 +104,21 @@ public class ProductSpecificationService : IProductSpecificationService
         var specification = MapToEntity(productId, dto);
         specification.SpecificationId = specId;
 
+        var existingSpecs = await _specificationRepository.GetByProductIdAsync(productId);
+
+        if (!existingSpecs.Any(s => s.SpecificationId == specId))
+            return false;
+
+        bool duplicateSpecName = existingSpecs.Any(s =>
+            s.SpecificationId != specId &&
+            string.Equals(s.SpecName, specification.SpecName, StringComparison.OrdinalIgnoreCase));
+
+        if (duplicateSpecName)
+        {
+            throw new InvalidOperationException(
+                $"A specification named '{specification.SpecName}' already exists for this product.");
+        }
+
         return await _specificationRepository.UpdateAsync(specification);
     }
 

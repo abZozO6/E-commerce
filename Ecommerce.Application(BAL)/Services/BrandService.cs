@@ -53,10 +53,13 @@ public class BrandService : IBrandService
     {
         ArgumentNullException.ThrowIfNull(dto);
 
-        ValidateBrandName(dto.Name);
-
-        string name = dto.Name.Trim();
+        string name = ValidateAndNormalizeName(dto.Name);
         string slug = SlugGenerator.Generate(name);
+
+        if (slug.Length > 120)
+            throw new ArgumentException("Brand slug cannot exceed 120 characters.");
+
+        string? logoUrl = ValidateAndNormalizeLogoUrl(dto.LogoUrl);
 
         bool alreadyExists =
             await _brandRepository.ExistsByNameOrSlugAsync(name, slug);
@@ -69,7 +72,7 @@ public class BrandService : IBrandService
         {
             Name = name,
             Slug = slug,
-            LogoUrl = dto.LogoUrl?.Trim(),
+            LogoUrl = logoUrl,
             IsActive = true,
             IsDeleted = false
         };
@@ -92,9 +95,8 @@ public class BrandService : IBrandService
 
         ArgumentNullException.ThrowIfNull(dto);
 
-        ValidateBrandName(dto.Name);
-
-        string name = dto.Name.Trim();
+        string name = ValidateAndNormalizeName(dto.Name);
+        string? logoUrl = ValidateAndNormalizeLogoUrl(dto.LogoUrl);
 
         var existingBrand = await _brandRepository.GetByIdAsync(brandId);
 
@@ -115,7 +117,7 @@ public class BrandService : IBrandService
                 "Another brand with the same name or slug already exists.");
 
         existingBrand.Name = name;
-        existingBrand.LogoUrl = dto.LogoUrl?.Trim();
+        existingBrand.LogoUrl = logoUrl;
         existingBrand.IsActive = dto.IsActive;
 
         return await _brandRepository.UpdateAsync(existingBrand);
@@ -129,19 +131,30 @@ public class BrandService : IBrandService
         return await _brandRepository.DeleteAsync(brandId);
     }
 
-    private static void ValidateBrandData(string name, string slug)
+    private static string ValidateAndNormalizeName(string name)
     {
         if (string.IsNullOrWhiteSpace(name))
             throw new ArgumentException("Brand name is required.");
 
-        if (string.IsNullOrWhiteSpace(slug))
-            throw new ArgumentException("Brand slug is required.");
+        name = name.Trim();
+
+        if (name.Length > 100)
+            throw new ArgumentException("Brand name cannot exceed 100 characters.");
+
+        return name;
     }
 
-    private static void ValidateBrandName(string name)
+    private static string? ValidateAndNormalizeLogoUrl(string? logoUrl)
     {
-        if (string.IsNullOrWhiteSpace(name))
-            throw new ArgumentException("Brand name is required.");
+        if (string.IsNullOrWhiteSpace(logoUrl))
+            return null;
+
+        logoUrl = logoUrl.Trim();
+
+        if (logoUrl.Length > 1000)
+            throw new ArgumentException("Logo URL cannot exceed 1000 characters.");
+
+        return logoUrl;
     }
 
     private static BrandDto MapToDto(Brand brand)

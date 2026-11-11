@@ -80,6 +80,12 @@ public class CategoryService : ICategoryService
         string name = ValidateAndNormalizeName(dto.Name);
         string slug = SlugGenerator.Generate(name);
 
+        if (slug.Length > 120)
+        {
+            throw new ArgumentException(
+                "Category slug cannot exceed 120 characters.");
+        }
+
         await ValidateParentCategoryAsync(dto.ParentCategoryId);
 
         bool slugExists = await _categoryRepository.ExistsBySlugAsync(slug);
@@ -249,10 +255,10 @@ public class CategoryService : ICategoryService
 
         name = name.Trim();
 
-        if (name.Length > 200)
+        if (name.Length > 100)
         {
             throw new ArgumentException(
-                "Category name cannot exceed 200 characters.");
+                "Category name cannot exceed 100 characters.");
         }
 
         return name;

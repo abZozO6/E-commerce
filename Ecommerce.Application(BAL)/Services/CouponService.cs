@@ -35,7 +35,8 @@ public class CouponService : ICouponService
     {
         ValidateCode(code);
 
-        var coupon = await _couponRepository.GetByCodeAsync(code.Trim());
+        var normalizedCode = code.Trim().ToUpperInvariant();
+        var coupon = await _couponRepository.GetByCodeAsync(normalizedCode);
 
         return coupon is null ? null : MapToDto(coupon);
     }
@@ -155,7 +156,8 @@ public class CouponService : ICouponService
                 nameof(orderAmount),
                 "Order amount must be greater than zero.");
 
-        var coupon = await _couponRepository.GetByCodeAsync(code.Trim());
+        var normalizedCode = code.Trim().ToUpperInvariant();
+        var coupon = await _couponRepository.GetByCodeAsync(normalizedCode);
 
         if (coupon is null)
             return InvalidCoupon("Coupon code was not found.");

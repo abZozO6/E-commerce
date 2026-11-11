@@ -3,7 +3,7 @@ using Ecommerce.Core.Entities;
 using Ecommerce.Core.Interfaces;
 using Ecommerce.Infrastructure_DAL_.Data;
 
-using Ecommerce.Infrastructure_DAL_.Repositories;
+namespace Ecommerce.Infrastructure_DAL_.Repositories;
 
 public class OrderItemRepository : IOrderItemRepository
 {
@@ -56,6 +56,45 @@ public class OrderItemRepository : IOrderItemRepository
     }
 
     /// <summary>
+    /// Retrieves all items belonging to a batch of orders cleanly without N+1 queries.
+    /// </summary>
+    public async Task<IEnumerable<OrderItem>> GetByOrderIdsAsync(IEnumerable<long> orderIds)
+    {
+        ArgumentNullException.ThrowIfNull(orderIds);
+
+        var distinctIds = orderIds.Distinct().ToList();
+        if (distinctIds.Count == 0)
+            return [];
+
+        if (distinctIds.Any(id => id <= 0))
+            throw new ArgumentOutOfRangeException(nameof(orderIds), "All order IDs must be greater than zero.");
+
+        using var connection = _connectionFactory.CreateConnection();
+
+        const string sql = """
+            SELECT OrderItemId, OrderId, ProductId, ProductName,
+                   SKU, UnitPrice, Quantity, LineTotal
+            FROM dbo.OrderItems
+            WHERE OrderId IN @OrderIds
+            ORDER BY OrderId ASC, OrderItemId ASC;
+            """;
+
+        if (distinctIds.Count <= 1000)
+        {
+            return await connection.QueryAsync<OrderItem>(sql, new { OrderIds = distinctIds });
+        }
+
+        var items = new List<OrderItem>();
+        foreach (var chunk in distinctIds.Chunk(1000))
+        {
+            var chunkItems = await connection.QueryAsync<OrderItem>(sql, new { OrderIds = chunk });
+            items.AddRange(chunkItems);
+        }
+
+        return items;
+    }
+
+    /// <summary>
     /// Creates an order item, calculates its line total, and returns its generated ID.
     /// </summary>
     public async Task<long> CreateAsync(OrderItem item)
@@ -69,9 +108,6 @@ public class OrderItemRepository : IOrderItemRepository
         if (item.UnitPrice < 0)
             throw new ArgumentOutOfRangeException(
                 nameof(item.UnitPrice), "Unit price cannot be negative.");
-
-        if (item.OrderItemId <= 0)
-            throw new ArgumentOutOfRangeException(nameof(item.OrderItemId));
 
         item.LineTotal = item.UnitPrice * item.Quantity;
 
