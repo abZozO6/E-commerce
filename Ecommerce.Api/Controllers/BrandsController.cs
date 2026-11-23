@@ -1,6 +1,7 @@
 ﻿
 using Ecommerce.Application_BAL_.DTOs.Brands;
 using Ecommerce.Application_BAL_.Interfaces;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 namespace Ecommerce.API.Controllers;
@@ -16,6 +17,7 @@ public class BrandsController : ControllerBase
         _brandService = brandService;
     }
 
+    // GET: api/Brands
     [HttpGet]
     public async Task<ActionResult<IEnumerable<BrandDto>>> GetAll()
     {
@@ -23,6 +25,7 @@ public class BrandsController : ControllerBase
         return Ok(brands);
     }
 
+    // GET: api/Brands/active
     [HttpGet("active")]
     public async Task<ActionResult<IEnumerable<BrandDto>>> GetAllActive()
     {
@@ -30,6 +33,7 @@ public class BrandsController : ControllerBase
         return Ok(brands);
     }
 
+    // GET: api/Brands/5
     [HttpGet("{id:long}")]
     public async Task<ActionResult<BrandDto>> GetById(long id)
     {
@@ -41,6 +45,7 @@ public class BrandsController : ControllerBase
         return Ok(brand);
     }
 
+    // GET: api/Brands/slug/nike
     [HttpGet("slug/{slug}")]
     public async Task<ActionResult<BrandDto>> GetBySlug(string slug)
     {
@@ -52,6 +57,8 @@ public class BrandsController : ControllerBase
         return Ok(brand);
     }
 
+    // POST: api/Brands
+    [Authorize(Roles = "Admin")]
     [HttpPost]
     public async Task<ActionResult<BrandDto>> Create(CreateBrandDto dto)
     {
@@ -63,6 +70,8 @@ public class BrandsController : ControllerBase
             brand);
     }
 
+    // PUT: api/Brands/5
+    [Authorize(Roles = "Admin")]
     [HttpPut("{id:long}")]
     public async Task<IActionResult> Update(long id, UpdateBrandDto dto)
     {
@@ -74,6 +83,8 @@ public class BrandsController : ControllerBase
         return NoContent();
     }
 
+    // DELETE: api/Brands/5
+    [Authorize(Roles = "Admin")]
     [HttpDelete("{id:long}")]
     public async Task<IActionResult> Delete(long id)
     {

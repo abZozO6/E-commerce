@@ -1,6 +1,7 @@
 ﻿
 using Ecommerce.Application_BAL_.DTOs.Categories;
 using Ecommerce.Application_BAL_.Interfaces;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 namespace Ecommerce.API.Controllers;
@@ -79,6 +80,7 @@ public class CategoriesController : ControllerBase
     }
 
     // POST: api/Categories
+    [Authorize(Roles = "Admin")]
     [HttpPost]
     public async Task<ActionResult<CategoryDto>> Create(
         CreateCategoryDto dto)
@@ -92,6 +94,7 @@ public class CategoriesController : ControllerBase
     }
 
     // PUT: api/Categories/5
+    [Authorize(Roles = "Admin")]
     [HttpPut("{id:long}")]
     public async Task<IActionResult> Update(
         long id,
@@ -106,6 +109,7 @@ public class CategoriesController : ControllerBase
     }
 
     // DELETE: api/Categories/5
+    [Authorize(Roles = "Admin")]
     [HttpDelete("{id:long}")]
     public async Task<IActionResult> Delete(long id)
     {
