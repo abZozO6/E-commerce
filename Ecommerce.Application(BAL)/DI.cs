@@ -1,6 +1,8 @@
 ﻿using Ecommerce.Application_BAL_.Interfaces;
 using Ecommerce.Application_BAL_.Services;
 using Microsoft.Extensions.DependencyInjection;
+using Ecommerce.Application_BAL_.Helpers;
+using Microsoft.Extensions.Configuration;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -11,7 +13,7 @@ namespace Ecommerce.Application_BAL_
 {
     public static class DI
     {
-        public static IServiceCollection AddApplication(this IServiceCollection services)
+        public static IServiceCollection AddApplication(this IServiceCollection services , IConfiguration configuration)
         {
             services.AddScoped<IBrandService, BrandService>();
 
@@ -38,6 +40,13 @@ namespace Ecommerce.Application_BAL_
             services.AddScoped<IInventoryTransactionService, InventoryTransactionService>();
 
             services.AddScoped<IPaymentService, PaymentService>();
+
+            services.Configure<JwtSettings>(configuration.GetSection(JwtSettings.SectionName));
+
+            services.AddScoped<IJwtTokenGenerator, JwtTokenGenerator>();
+
+            services.AddScoped<IAuthService, AuthService>();
+
 
             return services;
         }
