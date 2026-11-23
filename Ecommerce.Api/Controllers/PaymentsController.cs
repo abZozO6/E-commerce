@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using Ecommerce.Application_BAL_.DTOs.Payments;
 using Ecommerce.Application_BAL_.Interfaces;
+using Ecommerce.Core.Enums;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -17,6 +18,10 @@ public class PaymentsController : ControllerBase
     {
         _paymentService = paymentService;
     }
+
+    // ==========================================
+    // Customer Endpoints
+    // ==========================================
 
     // POST: api/Payments/order/5
     [HttpPost("order/{orderId:long}")]
@@ -60,22 +65,48 @@ public class PaymentsController : ControllerBase
         return Ok(payments);
     }
 
-    // POST: api/Payments/5/callback
-    // Restricted to Admin: used for verified payment provider webhook or manual callback processing
+    // ==========================================
+    // Admin Endpoints
+    // ==========================================
+
+    /// <summary>
+    /// Admin manually updates a payment's status and records an audit log entry.
+    /// PUT replaces the old POST /callback endpoint with a clearly named, body-driven operation.
+    /// </summary>
+    // PUT: api/Payments/5/status
     [Authorize(Roles = "Admin")]
-    [HttpPost("{id:long}/callback")]
-    public async Task<IActionResult> HandleCallback(
-        long id,
-        [FromQuery] string newStatus,
-        [FromQuery] string? transactionReference = null)
+    [HttpPut("{id:long}/status")]
+    public async Task<IActionResult> AdminUpdateStatus(long id, [FromBody] AdminUpdatePaymentStatusDto dto)
     {
-        bool handled = await _paymentService.HandleVerifiedCallbackAsync(id, newStatus, transactionReference);
+        if (!TryGetUserId(out var adminUserId))
+            return Unauthorized();
 
-        if (!handled)
-            return NotFound();
+        var result = await _paymentService.AdminUpdateStatusAsync(id, adminUserId, dto);
 
-        return NoContent();
+        return result switch
+        {
+            PaymentStatusUpdateResult.Updated => NoContent(),
+            PaymentStatusUpdateResult.NotFound => NotFound(),
+            PaymentStatusUpdateResult.NoChange => Ok(new
+            {
+                message = "Payment already has the requested status. No changes were made."
+            }),
+            _ => StatusCode(StatusCodes.Status500InternalServerError)
+        };
     }
+
+    // GET: api/Payments/5/audit-logs
+    [Authorize(Roles = "Admin")]
+    [HttpGet("{id:long}/audit-logs")]
+    public async Task<ActionResult<IEnumerable<PaymentStatusAuditLogDto>>> GetAuditLogs(long id)
+    {
+        var logs = await _paymentService.GetAuditLogsAsync(id);
+        return Ok(logs);
+    }
+
+    // ==========================================
+    // Helpers
+    // ==========================================
 
     private bool TryGetUserId(out long userId)
     {

@@ -1,6 +1,7 @@
 ﻿using Ecommerce.Application_BAL_.DTOs.Payments;
 using Ecommerce.Application_BAL_.Interfaces;
 using Ecommerce.Core.Entities;
+using Ecommerce.Core.Enums;
 using Ecommerce.Core.Interfaces;
 
 namespace Ecommerce.Application_BAL_.Services;
@@ -9,13 +10,16 @@ public class PaymentService : IPaymentService
 {
     private readonly IPaymentRepository _paymentRepository;
     private readonly IOrderRepository _orderRepository;
+    private readonly IPaymentStatusAuditRepository _auditRepository;
 
     public PaymentService(
         IPaymentRepository paymentRepository,
-        IOrderRepository orderRepository)
+        IOrderRepository orderRepository,
+        IPaymentStatusAuditRepository auditRepository)
     {
         _paymentRepository = paymentRepository;
         _orderRepository = orderRepository;
+        _auditRepository = auditRepository;
     }
 
     public async Task<PaymentDto?> GetMyPaymentByIdAsync(
@@ -148,6 +152,60 @@ public class PaymentService : IPaymentService
             transactionReference);
     }
 
+    /// <summary>
+    /// Admin-only: validates inputs, then delegates to the repository to update the
+    /// payment status and insert an audit record — both atomically in one transaction.
+    /// </summary>
+    public async Task<PaymentStatusUpdateResult> AdminUpdateStatusAsync(
+        long paymentId,
+        long adminUserId,
+        AdminUpdatePaymentStatusDto dto)
+    {
+        ValidateId(paymentId, nameof(paymentId));
+        ValidateId(adminUserId, nameof(adminUserId));
+        ArgumentNullException.ThrowIfNull(dto);
+
+        var newStatus = dto.NewStatus?.Trim();
+        if (string.IsNullOrWhiteSpace(newStatus))
+            throw new ArgumentException("NewStatus is required.");
+
+        var reason = dto.Reason?.Trim();
+        if (string.IsNullOrWhiteSpace(reason))
+            throw new ArgumentException("Reason is required.");
+
+        if (reason.Length > 500)
+            throw new ArgumentException("Reason cannot exceed 500 characters.");
+
+        // Validate against the known statuses. Pending is excluded — no manual
+        // transition back to Pending is meaningful.
+        var allowedAdminStatuses = new[] { "Succeeded", "Failed", "Cancelled", "Refunded" };
+
+        var normalizedStatus = allowedAdminStatuses.FirstOrDefault(
+            s => s.Equals(newStatus, StringComparison.OrdinalIgnoreCase));
+
+        if (normalizedStatus is null)
+            throw new ArgumentException(
+                $"Invalid payment status '{newStatus}'. Allowed values: {string.Join(", ", allowedAdminStatuses)}.");
+
+        return await _paymentRepository.AdminUpdateStatusAsync(
+            paymentId,
+            normalizedStatus,
+            dto.TransactionReference,
+            adminUserId,
+            reason);
+    }
+
+    /// <summary>
+    /// Admin-only: returns audit log records for a payment, ordered newest first.
+    /// </summary>
+    public async Task<IEnumerable<PaymentStatusAuditLogDto>> GetAuditLogsAsync(long paymentId)
+    {
+        ValidateId(paymentId, nameof(paymentId));
+
+        var logs = await _auditRepository.GetByPaymentIdAsync(paymentId);
+        return logs.Select(MapAuditToDto);
+    }
+
     private static PaymentDto MapToDto(Payment payment)
     {
         return new PaymentDto
@@ -160,6 +218,21 @@ public class PaymentService : IPaymentService
             Status = payment.Status,
             PaidAt = payment.PaidAt,
             CreatedAt = payment.CreatedAt
+        };
+    }
+
+    private static PaymentStatusAuditLogDto MapAuditToDto(PaymentStatusAuditLog log)
+    {
+        return new PaymentStatusAuditLogDto
+        {
+            AuditLogId           = log.AuditLogId,
+            PaymentId            = log.PaymentId,
+            AdminUserId          = log.AdminUserId,
+            OldStatus            = log.OldStatus,
+            NewStatus            = log.NewStatus,
+            TransactionReference = log.TransactionReference,
+            Reason               = log.Reason,
+            ChangedAt            = log.ChangedAt
         };
     }
 
