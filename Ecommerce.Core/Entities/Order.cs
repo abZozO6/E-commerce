@@ -25,5 +25,33 @@ namespace Ecommerce.Core.Entities
         public string? ShippingBuildingDetails { get; set; } = null;
         public DateTime CreatedAt { get; set; }
 
+        /// <summary>
+        /// Normalizes an incoming order status string to its canonical PascalCase representation.
+        /// Unrecognized values are returned trimmed for subsequent validation.
+        /// </summary>
+        public static string NormalizeStatus(string status)
+        {
+            if (string.IsNullOrWhiteSpace(status))
+                return string.Empty;
+
+            return status.Trim().ToLowerInvariant() switch
+            {
+                "pending"    => "Pending",
+                "confirmed"  => "Confirmed",
+                "processing" => "Processing",
+                "shipped"    => "Shipped",
+                "delivered"  => "Delivered",
+                "cancelled"  => "Cancelled",
+                "returned"   => "Returned",
+                _            => status.Trim()
+            };
+        }
+
+        /// <summary>
+        /// Checks whether a status is one of the supported order statuses.
+        /// </summary>
+        public static bool IsAllowedStatus(string status) =>
+            status is "Pending" or "Confirmed" or "Processing"
+                or "Shipped" or "Delivered" or "Cancelled" or "Returned";
     }
 }

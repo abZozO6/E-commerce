@@ -20,10 +20,6 @@ namespace Ecommerce.Application_BAL_.Interfaces
 
         Task<OrderDto?> GetOrderByIdAsync(long orderId);
 
-        Task<bool> UpdateStatusAsync(long orderId, UpdateOrderStatusDto dto);
-
-        Task<bool> CancelOrderAsync(long orderId);
-
         /// <summary>
         /// Admin-only: validate the transition, update the order status,
         /// and record an audit log entry atomically.

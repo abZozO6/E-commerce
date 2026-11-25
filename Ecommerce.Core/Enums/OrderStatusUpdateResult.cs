@@ -15,14 +15,14 @@ public enum OrderStatusUpdateResult
     InvalidTransition,
 
     /// <summary>
-    /// The transition requires the order's payment to be in Succeeded state,
+    /// The transition requires the order's payment to be in Paid state,
     /// but the payment has not been completed yet.
     /// </summary>
     PaymentRequired,
 
     /// <summary>
-    /// Cancellation was attempted on a paid order; a refund must be issued first
-    /// via the payment management flow.
+    /// Cancellation was attempted on a paid or partially refunded order;
+    /// a full refund must be issued first via the payment management flow.
     /// </summary>
     RefundRequired
 }

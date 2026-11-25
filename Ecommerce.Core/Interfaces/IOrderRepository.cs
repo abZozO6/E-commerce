@@ -17,9 +17,11 @@ public interface IOrderRepository
 
     Task<long> CreateOrderWithTransactionAsync(Order order, IEnumerable<OrderItem> items, IDictionary<long, byte[]> productRowVersions, long? cartIdToClear = null);
 
-    Task<bool> UpdateStatusAsync(long orderId, string newStatus);
-
-    Task<bool> CancelOrderWithTransactionAsync(long orderId, long userId, bool isAdmin = false);
+    /// <summary>
+    /// Customer cancellation: cancels an eligible unpaid Pending order belonging to the customer,
+    /// restores stock, logs inventory return, and inserts a customer audit log record atomically.
+    /// </summary>
+    Task<bool> CancelOrderWithTransactionAsync(long orderId, long userId);
 
     /// <summary>
     /// Admin-only: validates the transition, updates order status, and inserts an audit log

@@ -1,12 +1,9 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace Ecommerce.Application_BAL_.DTOs.Orders
 {
+    [Obsolete("Use AdminUpdateOrderStatusDto instead. Order status changes require administrative authorization, payment checks, and audit logging.")]
     public class UpdateOrderStatusDto
     {
         [Required]

@@ -62,7 +62,7 @@ public class OrderRepository : IOrderRepository
     {
         var normalizedStatus = string.IsNullOrWhiteSpace(status)
             ? null
-            : status.Trim();
+            : NormalizeStatus(status);
 
         if (normalizedStatus is not null && !IsAllowedStatus(normalizedStatus))
             throw new ArgumentException("Unsupported order status.", nameof(status));
@@ -483,63 +483,34 @@ public class OrderRepository : IOrderRepository
     }
 
     /// <summary>
-    /// Updates an order status only when the requested transition is allowed.
-    /// Ownership and administrator authorization must be enforced by the service/controller.
+    /// Customer cancellation: cancels an eligible unpaid Pending order belonging to the customer,
+    /// restores stock, records inventory return movements, and writes a customer audit log record atomically.
+    /// Administrator cancellation must use AdminUpdateStatusAsync.
     /// </summary>
-    public async Task<bool> UpdateStatusAsync(long orderId, string newStatus)
+    public async Task<bool> CancelOrderWithTransactionAsync(long orderId, long userId)
     {
-        if (string.IsNullOrWhiteSpace(newStatus) || !IsAllowedStatus(newStatus.Trim()))
-            throw new ArgumentException("Unsupported order status.", nameof(newStatus));
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(orderId);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(userId);
 
-        var status = newStatus.Trim();
-
-        using var connection = _connectionFactory.CreateConnection();
-
-        const string sql = """
-            UPDATE dbo.Orders
-            SET Status = @Status
-            WHERE OrderId = @OrderId
-              AND (
-                   (Status = 'Pending' AND @Status IN ('Confirmed', 'Processing'))
-                OR (Status = 'Confirmed' AND @Status = 'Processing')
-                OR (Status = 'Processing' AND @Status = 'Shipped')
-                OR (Status = 'Shipped' AND @Status IN ('Delivered', 'Returned'))
-                OR (Status = 'Delivered' AND @Status = 'Returned')
-            );
-            """;
-
-        var rowsAffected = await connection.ExecuteAsync(
-            sql, new { OrderId = orderId, Status = status });
-
-        return rowsAffected == 1;
-    }
-
-    /// <summary>
-    /// Cancels an eligible unpaid order, restores stock, and records return movements.
-    /// Only the owner or an administrator may cancel; authorization must be based on trusted identity.
-    /// Paid orders require a separate payment-refund workflow.
-    /// </summary>
-    public async Task<bool> CancelOrderWithTransactionAsync(long orderId, long userId, bool isAdmin = false)
-    {
         using var connection = _connectionFactory.CreateConnection();
         await connection.OpenAsync();
         using var transaction = connection.BeginTransaction();
 
         try
         {
-            // Atomically cancel only eligible orders that have not been paid.
+            // Atomically cancel only eligible unpaid orders belonging to this customer in Pending status.
             const string cancelOrderSql = """
-                           UPDATE dbo.Orders
-                           SET Status = 'Cancelled'
-                           WHERE OrderId = @OrderId
-                           AND (@IsAdmin = 1 OR UserId = @UserId)
-                           AND Status IN ('Pending', 'Confirmed', 'Processing')
-                           AND PaymentStatus IN ('Pending', 'Failed');
-                          """;
+                UPDATE dbo.Orders
+                SET Status = 'Cancelled'
+                WHERE OrderId = @OrderId
+                  AND UserId = @UserId
+                  AND Status = 'Pending'
+                  AND PaymentStatus IN ('Pending', 'Failed');
+                """;
 
             var rowsAffected = await connection.ExecuteAsync(
                 cancelOrderSql,
-                new { OrderId = orderId, UserId = userId, IsAdmin = isAdmin },
+                new { OrderId = orderId, UserId = userId },
                 transaction);
 
             if (rowsAffected != 1)
@@ -548,7 +519,7 @@ public class OrderRepository : IOrderRepository
                 return false;
             }
 
-            // Restore stock and record one positive inventory movement per order item.
+            // Restore stock and record one positive inventory return movement per order item.
             const string restoreStockSql = """
                 UPDATE p
                 SET p.StockQuantity = p.StockQuantity + oi.Quantity
@@ -577,12 +548,29 @@ public class OrderRepository : IOrderRepository
                 },
                 transaction);
 
+            // Record customer cancellation audit log in the same transaction.
+            const string auditSql = """
+                INSERT INTO dbo.OrderStatusAuditLogs
+                    (OrderId, AdminUserId, CustomerUserId, OldStatus, NewStatus, Reason)
+                VALUES
+                    (@OrderId, NULL, @CustomerUserId, 'Pending', 'Cancelled', @Reason);
+                """;
+
+            await connection.ExecuteAsync(
+                auditSql,
+                new
+                {
+                    OrderId        = orderId,
+                    CustomerUserId = userId,
+                    Reason         = "Cancelled by customer."
+                },
+                transaction);
+
             transaction.Commit();
             return true;
         }
         catch
         {
-            // Roll back the status change and stock restoration together.
             try
             {
                 transaction.Rollback();
@@ -625,17 +613,14 @@ public class OrderRepository : IOrderRepository
     }
 
     /// <summary>
-    /// Checks whether a status is one of the values supported by the database schema.
+    /// Normalizes incoming status strings to canonical PascalCase values.
+    /// Unrecognized values are returned trimmed for subsequent validation.
     /// </summary>
-    private static bool IsAllowedStatus(string status) =>
-        status is "Pending" or "Confirmed" or "Processing"
-            or "Shipped" or "Delivered" or "Cancelled" or "Returned";
+    public static string NormalizeStatus(string status) => Order.NormalizeStatus(status);
 
-    /// <summary>
-    /// Stores the product data retrieved from the database during checkout.
-    /// This allows us to validate the product's price, stock, active status,
-    /// and RowVersion before creating the order and updating inventory.
-    /// </summary>
+   
+    private static bool IsAllowedStatus(string status) => Order.IsAllowedStatus(status);
+
     private sealed class ProductSnapshot
     {
         public long ProductId { get; init; }
@@ -647,11 +632,6 @@ public class OrderRepository : IOrderRepository
         public byte[] RowVersion { get; init; } = [];
     }
 
-    /// <summary>
-    /// Stores the product IDs and quantities currently in the cart.
-    /// We use it to compare the actual cart contents with the requested order items
-    /// and help prevent creating an order with mismatched products or quantities.
-    /// </summary>
 
     private sealed class CartItemSnapshot
     {
@@ -659,11 +639,6 @@ public class OrderRepository : IOrderRepository
         public int Quantity { get; init; }
     }
 
-    /// <summary>
-    /// Represents an order item after its data has been verified.
-    /// It uses trusted product details from the database instead of relying on
-    /// client-provided prices, names, or SKUs before inserting the item into the order.
-    /// </summary>
     private sealed record VerifiedOrderItem(
         long ProductId,
         string ProductName,
@@ -684,16 +659,8 @@ public class OrderRepository : IOrderRepository
         public bool IsActive { get; init; }
     }
 
-    // ---------------------------------------------------------------------------
-    // Admin status update with audit logging
-    // ---------------------------------------------------------------------------
 
-    /// <summary>
-    /// Allowed forward transitions for order status.
-    /// Forward-progress transitions (Confirmed, Processing, Shipped, Delivered)
-    /// are gated on the payment being Succeeded.
-    /// Cancellation is only allowed when payment is NOT Succeeded.
-    /// </summary>
+    
     private static readonly IReadOnlyDictionary<string, IReadOnlySet<string>> AllowedTransitions =
         new Dictionary<string, IReadOnlySet<string>>(StringComparer.OrdinalIgnoreCase)
         {
@@ -715,7 +682,6 @@ public class OrderRepository : IOrderRepository
             "Confirmed", "Processing", "Shipped", "Delivered"
         };
 
-    /// <inheritdoc/>
     public async Task<OrderStatusUpdateResult> AdminUpdateStatusAsync(
         long orderId,
         string newStatus,
@@ -731,10 +697,14 @@ public class OrderRepository : IOrderRepository
         if (string.IsNullOrWhiteSpace(reason))
             throw new ArgumentException("Reason is required.", nameof(reason));
 
+        var trimmedReason = reason.Trim();
+        if (trimmedReason.Length > 500)
+            throw new ArgumentException("Reason cannot exceed 500 characters.", nameof(reason));
+
         if (adminUserId <= 0)
             throw new ArgumentOutOfRangeException(nameof(adminUserId));
 
-        var normalizedNew = newStatus.Trim();
+        var normalizedNew = NormalizeStatus(newStatus);
 
         if (!IsAllowedStatus(normalizedNew))
             throw new ArgumentException("Unsupported order status.", nameof(newStatus));
@@ -781,20 +751,50 @@ public class OrderRepository : IOrderRepository
                 return OrderStatusUpdateResult.InvalidTransition;
             }
 
-            // Forward-progress transitions require a completed payment.
             if (PaymentRequiredTargets.Contains(normalizedNew)
-                && !string.Equals(paymentStatus, "Succeeded", StringComparison.OrdinalIgnoreCase))
+                && !string.Equals(paymentStatus, "Paid", StringComparison.OrdinalIgnoreCase))
             {
                 transaction.Rollback();
                 return OrderStatusUpdateResult.PaymentRequired;
             }
 
-            // Cancelling a paid order requires a refund first.
             if (string.Equals(normalizedNew, "Cancelled", StringComparison.OrdinalIgnoreCase)
-                && string.Equals(paymentStatus, "Succeeded", StringComparison.OrdinalIgnoreCase))
+                && (string.Equals(paymentStatus, "Paid", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(paymentStatus, "PartiallyRefunded", StringComparison.OrdinalIgnoreCase)))
             {
                 transaction.Rollback();
                 return OrderStatusUpdateResult.RefundRequired;
+            }
+
+            if (string.Equals(normalizedNew, "Cancelled", StringComparison.OrdinalIgnoreCase))
+            {
+                const string restoreStockSql = """
+                    UPDATE p
+                    SET p.StockQuantity = p.StockQuantity + oi.Quantity
+                    FROM dbo.Products AS p
+                    INNER JOIN dbo.OrderItems AS oi
+                        ON oi.ProductId = p.ProductId
+                    WHERE oi.OrderId = @OrderId;
+
+                    INSERT INTO dbo.InventoryTransactions (
+                        ProductId, ReferenceOrderId, QuantityChange,
+                        TransactionType, Notes
+                    )
+                    SELECT
+                        ProductId, OrderId, Quantity,
+                        'Return', @Notes
+                    FROM dbo.OrderItems
+                    WHERE OrderId = @OrderId;
+                    """;
+
+                await connection.ExecuteAsync(
+                    restoreStockSql,
+                    new
+                    {
+                        OrderId = orderId,
+                        Notes = $"Stock restored after cancellation of order {orderId}."
+                    },
+                    transaction);
             }
 
             // Apply the status change.
@@ -812,9 +812,9 @@ public class OrderRepository : IOrderRepository
             // Insert the audit record in the same transaction.
             const string auditSql = """
                 INSERT INTO dbo.OrderStatusAuditLogs
-                    (OrderId, AdminUserId, OldStatus, NewStatus, Reason)
+                    (OrderId, AdminUserId, CustomerUserId, OldStatus, NewStatus, Reason)
                 VALUES
-                    (@OrderId, @AdminUserId, @OldStatus, @NewStatus, @Reason);
+                    (@OrderId, @AdminUserId, NULL, @OldStatus, @NewStatus, @Reason);
                 """;
 
             await connection.ExecuteAsync(
@@ -825,7 +825,7 @@ public class OrderRepository : IOrderRepository
                     AdminUserId = adminUserId,
                     OldStatus   = currentStatus,
                     NewStatus   = normalizedNew,
-                    Reason      = reason.Trim()
+                    Reason      = trimmedReason
                 },
                 transaction);
 
@@ -839,7 +839,6 @@ public class OrderRepository : IOrderRepository
         }
     }
 
-    /// <summary>Lightweight projection used only by AdminUpdateStatusAsync.</summary>
     private sealed class OrderSnapshot
     {
         public long OrderId { get; init; }

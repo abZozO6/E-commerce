@@ -108,37 +108,10 @@ public class OrdersController : ControllerBase
     }
 
     // PUT: api/Orders/5/status
+    // Admin-only: atomic status update with payment validation and audit logging.
     [Authorize(Roles = "Admin")]
     [HttpPut("{id:long}/status")]
-    public async Task<IActionResult> UpdateOrderStatus(long id, UpdateOrderStatusDto dto)
-    {
-        bool updated = await _orderService.UpdateStatusAsync(id, dto);
-
-        if (!updated)
-            return NotFound();
-
-        return NoContent();
-    }
-
-    // POST: api/Orders/5/cancel
-    [Authorize(Roles = "Admin")]
-    [HttpPost("{id:long}/cancel")]
-    [HttpPut("{id:long}/cancel")]
-    public async Task<IActionResult> CancelOrder(long id)
-    {
-        bool cancelled = await _orderService.CancelOrderAsync(id);
-
-        if (!cancelled)
-            return NotFound();
-
-        return NoContent();
-    }
-
-    // PUT: api/Orders/5/admin-status
-    // Admin-only: atomic status update with audit logging.
-    [Authorize(Roles = "Admin")]
-    [HttpPut("{id:long}/admin-status")]
-    public async Task<IActionResult> AdminUpdateOrderStatus(long id, AdminUpdateOrderStatusDto dto)
+    public async Task<IActionResult> UpdateOrderStatus(long id, [FromBody] AdminUpdateOrderStatusDto dto)
     {
         if (!TryGetUserId(out var adminUserId))
             return Unauthorized();
@@ -151,9 +124,39 @@ public class OrdersController : ControllerBase
             OrderStatusUpdateResult.NotFound         => NotFound(),
             OrderStatusUpdateResult.NoChange         => Ok(new { message = "Order is already in the requested status." }),
             OrderStatusUpdateResult.InvalidTransition => Conflict(new { message = "The requested status transition is not allowed." }),
-            OrderStatusUpdateResult.PaymentRequired  => Conflict(new { message = "Payment must be completed (Succeeded) before this status transition." }),
+            OrderStatusUpdateResult.PaymentRequired  => Conflict(new { message = "Payment must be completed (Paid) before this status transition." }),
             OrderStatusUpdateResult.RefundRequired   => Conflict(new { message = "A refund must be issued before cancelling a paid order." }),
-            _                                        => StatusCode(500)
+            _                                        => StatusCode(StatusCodes.Status500InternalServerError)
+        };
+    }
+
+    // POST: api/Orders/5/cancel
+    // Admin-only: cancel order with payment validation, inventory restoration, and audit logging.
+    [Authorize(Roles = "Admin")]
+    [HttpPost("{id:long}/cancel")]
+    [HttpPut("{id:long}/cancel")]
+    public async Task<IActionResult> CancelOrder(long id)
+    {
+        if (!TryGetUserId(out var adminUserId))
+            return Unauthorized();
+
+        var result = await _orderService.AdminUpdateStatusAsync(
+            id,
+            adminUserId,
+            new AdminUpdateOrderStatusDto
+            {
+                NewStatus = "Cancelled",
+                Reason = "Cancelled by administrator."
+            });
+
+        return result switch
+        {
+            OrderStatusUpdateResult.Updated          => NoContent(),
+            OrderStatusUpdateResult.NotFound         => NotFound(),
+            OrderStatusUpdateResult.NoChange         => Ok(new { message = "Order is already cancelled." }),
+            OrderStatusUpdateResult.InvalidTransition => Conflict(new { message = "The order cannot be cancelled in its current state." }),
+            OrderStatusUpdateResult.RefundRequired   => Conflict(new { message = "A refund must be issued before cancelling a paid order." }),
+            _                                        => StatusCode(StatusCodes.Status500InternalServerError)
         };
     }
 

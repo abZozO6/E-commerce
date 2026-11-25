@@ -224,47 +224,16 @@ public class OrderService : IOrderService
 
         return await _orderRepository.CancelOrderWithTransactionAsync(
             orderId,
-            userId,
-            isAdmin: false);
-    }
-
-    // Admin: may cancel eligible Pending, Confirmed, or Processing orders.
-    // Protect this method with [Authorize(Roles = "Admin")] at the API layer.
-    public async Task<bool> CancelOrderAsync(long orderId)
-    {
-        ValidateId(orderId, nameof(orderId));
-
-        // userId is ignored by the repository when isAdmin is true.
-        return await _orderRepository.CancelOrderWithTransactionAsync(
-            orderId,
-            userId: 0,
-            isAdmin: true);
-    }
-
-    // Admin: update status according to the transition rules enforced by the repository.
-    // Protect this method with [Authorize(Roles = "Admin")] at the API layer.
-    public async Task<bool> UpdateStatusAsync(long orderId, UpdateOrderStatusDto dto)
-    {
-        ValidateId(orderId, nameof(orderId));
-        ArgumentNullException.ThrowIfNull(dto);
-
-        if (string.IsNullOrWhiteSpace(dto.NewStatus))
-            throw new ArgumentException("New status is required.", nameof(dto.NewStatus));
-
-        var newStatus = dto.NewStatus.Trim();
-
-        if (newStatus.Length > 20)
-            throw new ArgumentException("Status cannot exceed 20 characters.", nameof(dto.NewStatus));
-
-        return await _orderRepository.UpdateStatusAsync(orderId, newStatus);
+            userId);
     }
 
     private async Task EnsureUserExistsAsync(long userId)
     {
         var user = await _userRepository.GetByIdAsync(userId);
 
-        if (user is null || user.IsDeleted)
-            throw new KeyNotFoundException("User not found.");
+        if (user is null || user.IsDeleted || !user.IsActive)
+            throw new InvalidOperationException(
+                "User does not exist or is inactive.");
     }
 
     private async Task<IReadOnlyList<OrderDto>> MapOrdersToDtosAsync(IEnumerable<Order> orders)
@@ -345,11 +314,10 @@ public class OrderService : IOrderService
         if (string.IsNullOrWhiteSpace(dto.NewStatus))
             throw new ArgumentException("New status is required.", nameof(dto.NewStatus));
 
-        if (string.IsNullOrWhiteSpace(dto.Reason))
-            throw new ArgumentException("Reason is required.", nameof(dto.Reason));
-
-        var newStatus = dto.NewStatus.Trim();
-        var reason    = dto.Reason.Trim();
+        var newStatus = Order.NormalizeStatus(dto.NewStatus);
+        var reason    = string.IsNullOrWhiteSpace(dto.Reason)
+            ? "Status updated by administrator."
+            : dto.Reason.Trim();
 
         return await _orderRepository.AdminUpdateStatusAsync(orderId, newStatus, reason, adminUserId);
     }
@@ -363,13 +331,14 @@ public class OrderService : IOrderService
 
         return logs.Select(log => new OrderStatusAuditLogDto
         {
-            AuditLogId  = log.AuditLogId,
-            OrderId     = log.OrderId,
-            AdminUserId = log.AdminUserId,
-            OldStatus   = log.OldStatus,
-            NewStatus   = log.NewStatus,
-            Reason      = log.Reason,
-            ChangedAt   = log.ChangedAt
+            AuditLogId     = log.AuditLogId,
+            OrderId        = log.OrderId,
+            AdminUserId    = log.AdminUserId,
+            CustomerUserId = log.CustomerUserId,
+            OldStatus      = log.OldStatus,
+            NewStatus      = log.NewStatus,
+            Reason         = log.Reason,
+            ChangedAt      = log.ChangedAt
         });
     }
 }

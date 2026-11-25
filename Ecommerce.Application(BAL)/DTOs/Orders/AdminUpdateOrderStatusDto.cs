@@ -8,7 +8,6 @@ public class AdminUpdateOrderStatusDto
     [MaxLength(60)]
     public string NewStatus { get; set; } = string.Empty;
 
-    [Required]
     [MaxLength(500)]
-    public string Reason { get; set; } = string.Empty;
+    public string? Reason { get; set; }
 }

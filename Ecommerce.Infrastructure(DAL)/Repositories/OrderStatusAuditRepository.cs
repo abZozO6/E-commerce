@@ -34,6 +34,7 @@ public class OrderStatusAuditRepository : IOrderStatusAuditRepository
                 AuditLogId,
                 OrderId,
                 AdminUserId,
+                CustomerUserId,
                 OldStatus,
                 NewStatus,
                 Reason,
