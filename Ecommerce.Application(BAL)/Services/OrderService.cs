@@ -1,6 +1,7 @@
 ﻿using Ecommerce.Application_BAL_.DTOs.Orders;
 using Ecommerce.Application_BAL_.Interfaces;
 using Ecommerce.Core.Entities;
+using Ecommerce.Core.Enums;
 using Ecommerce.Core.Interfaces;
 
 namespace Ecommerce.Application_BAL_.Services;
@@ -19,6 +20,7 @@ public class OrderService : IOrderService
     private readonly ICartItemRepository _cartItemRepository;
     private readonly IProductRepository _productRepository;
     private readonly ICouponRepository _couponRepository;
+    private readonly IOrderStatusAuditRepository _auditRepository;
 
     public OrderService(
         IOrderRepository orderRepository,
@@ -28,7 +30,8 @@ public class OrderService : IOrderService
         ICartRepository cartRepository,
         ICartItemRepository cartItemRepository,
         IProductRepository productRepository,
-        ICouponRepository couponRepository)
+        ICouponRepository couponRepository,
+        IOrderStatusAuditRepository auditRepository)
     {
         _orderRepository = orderRepository
             ?? throw new ArgumentNullException(nameof(orderRepository));
@@ -46,6 +49,8 @@ public class OrderService : IOrderService
             ?? throw new ArgumentNullException(nameof(productRepository));
         _couponRepository = couponRepository
             ?? throw new ArgumentNullException(nameof(couponRepository));
+        _auditRepository = auditRepository
+            ?? throw new ArgumentNullException(nameof(auditRepository));
     }
 
     // Customer: retrieve the current user's orders.
@@ -321,5 +326,50 @@ public class OrderService : IOrderService
     {
         if (id <= 0)
             throw new ArgumentOutOfRangeException(parameterName, "ID must be greater than zero.");
+    }
+
+    // ---------------------------------------------------------------------------
+    // Admin: atomic status update with audit logging
+    // ---------------------------------------------------------------------------
+
+    /// <inheritdoc/>
+    public async Task<OrderStatusUpdateResult> AdminUpdateStatusAsync(
+        long orderId,
+        long adminUserId,
+        AdminUpdateOrderStatusDto dto)
+    {
+        ValidateId(orderId, nameof(orderId));
+        ValidateId(adminUserId, nameof(adminUserId));
+        ArgumentNullException.ThrowIfNull(dto);
+
+        if (string.IsNullOrWhiteSpace(dto.NewStatus))
+            throw new ArgumentException("New status is required.", nameof(dto.NewStatus));
+
+        if (string.IsNullOrWhiteSpace(dto.Reason))
+            throw new ArgumentException("Reason is required.", nameof(dto.Reason));
+
+        var newStatus = dto.NewStatus.Trim();
+        var reason    = dto.Reason.Trim();
+
+        return await _orderRepository.AdminUpdateStatusAsync(orderId, newStatus, reason, adminUserId);
+    }
+
+    /// <inheritdoc/>
+    public async Task<IEnumerable<OrderStatusAuditLogDto>> GetAuditLogsAsync(long orderId)
+    {
+        ValidateId(orderId, nameof(orderId));
+
+        var logs = await _auditRepository.GetByOrderIdAsync(orderId);
+
+        return logs.Select(log => new OrderStatusAuditLogDto
+        {
+            AuditLogId  = log.AuditLogId,
+            OrderId     = log.OrderId,
+            AdminUserId = log.AdminUserId,
+            OldStatus   = log.OldStatus,
+            NewStatus   = log.NewStatus,
+            Reason      = log.Reason,
+            ChangedAt   = log.ChangedAt
+        });
     }
 }

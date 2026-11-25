@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using Ecommerce.Application_BAL_.DTOs.Orders;
 using Ecommerce.Application_BAL_.Interfaces;
+using Ecommerce.Core.Enums;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -131,6 +132,45 @@ public class OrdersController : ControllerBase
             return NotFound();
 
         return NoContent();
+    }
+
+    // PUT: api/Orders/5/admin-status
+    // Admin-only: atomic status update with audit logging.
+    [Authorize(Roles = "Admin")]
+    [HttpPut("{id:long}/admin-status")]
+    public async Task<IActionResult> AdminUpdateOrderStatus(long id, AdminUpdateOrderStatusDto dto)
+    {
+        if (!TryGetUserId(out var adminUserId))
+            return Unauthorized();
+
+        var result = await _orderService.AdminUpdateStatusAsync(id, adminUserId, dto);
+
+        return result switch
+        {
+            OrderStatusUpdateResult.Updated          => NoContent(),
+            OrderStatusUpdateResult.NotFound         => NotFound(),
+            OrderStatusUpdateResult.NoChange         => Ok(new { message = "Order is already in the requested status." }),
+            OrderStatusUpdateResult.InvalidTransition => Conflict(new { message = "The requested status transition is not allowed." }),
+            OrderStatusUpdateResult.PaymentRequired  => Conflict(new { message = "Payment must be completed (Succeeded) before this status transition." }),
+            OrderStatusUpdateResult.RefundRequired   => Conflict(new { message = "A refund must be issued before cancelling a paid order." }),
+            _                                        => StatusCode(500)
+        };
+    }
+
+    // GET: api/Orders/5/audit-logs
+    // Admin-only: retrieve the audit trail for a specific order.
+    [Authorize(Roles = "Admin")]
+    [HttpGet("{id:long}/audit-logs")]
+    public async Task<IActionResult> GetOrderAuditLogs(long id)
+    {
+        // Verify the order exists (GetOrderByIdAsync returns null for missing orders).
+        var order = await _orderService.GetOrderByIdAsync(id);
+
+        if (order is null)
+            return NotFound();
+
+        var logs = await _orderService.GetAuditLogsAsync(id);
+        return Ok(logs);
     }
 
     private bool TryGetUserId(out long userId)

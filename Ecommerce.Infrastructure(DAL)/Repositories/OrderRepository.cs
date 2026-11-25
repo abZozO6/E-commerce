@@ -1,5 +1,6 @@
 ﻿using Dapper;
 using Ecommerce.Core.Entities;
+using Ecommerce.Core.Enums;
 using Ecommerce.Core.Interfaces;
 using Ecommerce.Infrastructure_DAL_.Data;
 
@@ -681,6 +682,169 @@ public class OrderRepository : IOrderRepository
         public DateTime ExpiresAt { get; init; }
         public int? UsageLimit { get; init; }
         public bool IsActive { get; init; }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Admin status update with audit logging
+    // ---------------------------------------------------------------------------
+
+    /// <summary>
+    /// Allowed forward transitions for order status.
+    /// Forward-progress transitions (Confirmed, Processing, Shipped, Delivered)
+    /// are gated on the payment being Succeeded.
+    /// Cancellation is only allowed when payment is NOT Succeeded.
+    /// </summary>
+    private static readonly IReadOnlyDictionary<string, IReadOnlySet<string>> AllowedTransitions =
+        new Dictionary<string, IReadOnlySet<string>>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["Pending"]    = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Confirmed", "Cancelled" },
+            ["Confirmed"]  = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Processing", "Cancelled" },
+            ["Processing"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Shipped", "Cancelled" },
+            ["Shipped"]    = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Delivered", "Returned" },
+            ["Delivered"]  = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Returned" },
+            ["Cancelled"]  = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { },
+            ["Returned"]   = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { },
+        };
+
+    /// <summary>
+    /// Status transitions that require PaymentStatus = 'Succeeded'.
+    /// </summary>
+    private static readonly IReadOnlySet<string> PaymentRequiredTargets =
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "Confirmed", "Processing", "Shipped", "Delivered"
+        };
+
+    /// <inheritdoc/>
+    public async Task<OrderStatusUpdateResult> AdminUpdateStatusAsync(
+        long orderId,
+        string newStatus,
+        string reason,
+        long adminUserId)
+    {
+        if (orderId <= 0)
+            throw new ArgumentOutOfRangeException(nameof(orderId));
+
+        if (string.IsNullOrWhiteSpace(newStatus))
+            throw new ArgumentException("New status is required.", nameof(newStatus));
+
+        if (string.IsNullOrWhiteSpace(reason))
+            throw new ArgumentException("Reason is required.", nameof(reason));
+
+        if (adminUserId <= 0)
+            throw new ArgumentOutOfRangeException(nameof(adminUserId));
+
+        var normalizedNew = newStatus.Trim();
+
+        if (!IsAllowedStatus(normalizedNew))
+            throw new ArgumentException("Unsupported order status.", nameof(newStatus));
+
+        using var connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync();
+        using var transaction = connection.BeginTransaction();
+
+        try
+        {
+            // Lock the order row for the duration of this transaction.
+            const string selectSql = """
+                SELECT OrderId, Status, PaymentStatus
+                FROM dbo.Orders WITH (UPDLOCK, HOLDLOCK)
+                WHERE OrderId = @OrderId;
+                """;
+
+            var snapshot = await connection.QuerySingleOrDefaultAsync<OrderSnapshot>(
+                selectSql,
+                new { OrderId = orderId },
+                transaction);
+
+            if (snapshot is null)
+            {
+                transaction.Rollback();
+                return OrderStatusUpdateResult.NotFound;
+            }
+
+            var currentStatus = snapshot.Status;
+            var paymentStatus = snapshot.PaymentStatus;
+
+            // No-op when the requested status equals the current status.
+            if (string.Equals(currentStatus, normalizedNew, StringComparison.OrdinalIgnoreCase))
+            {
+                transaction.Rollback();
+                return OrderStatusUpdateResult.NoChange;
+            }
+
+            // Validate that the transition is allowed from the current status.
+            if (!AllowedTransitions.TryGetValue(currentStatus, out var allowed)
+                || !allowed.Contains(normalizedNew))
+            {
+                transaction.Rollback();
+                return OrderStatusUpdateResult.InvalidTransition;
+            }
+
+            // Forward-progress transitions require a completed payment.
+            if (PaymentRequiredTargets.Contains(normalizedNew)
+                && !string.Equals(paymentStatus, "Succeeded", StringComparison.OrdinalIgnoreCase))
+            {
+                transaction.Rollback();
+                return OrderStatusUpdateResult.PaymentRequired;
+            }
+
+            // Cancelling a paid order requires a refund first.
+            if (string.Equals(normalizedNew, "Cancelled", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(paymentStatus, "Succeeded", StringComparison.OrdinalIgnoreCase))
+            {
+                transaction.Rollback();
+                return OrderStatusUpdateResult.RefundRequired;
+            }
+
+            // Apply the status change.
+            const string updateSql = """
+                UPDATE dbo.Orders
+                SET Status = @NewStatus
+                WHERE OrderId = @OrderId;
+                """;
+
+            await connection.ExecuteAsync(
+                updateSql,
+                new { NewStatus = normalizedNew, OrderId = orderId },
+                transaction);
+
+            // Insert the audit record in the same transaction.
+            const string auditSql = """
+                INSERT INTO dbo.OrderStatusAuditLogs
+                    (OrderId, AdminUserId, OldStatus, NewStatus, Reason)
+                VALUES
+                    (@OrderId, @AdminUserId, @OldStatus, @NewStatus, @Reason);
+                """;
+
+            await connection.ExecuteAsync(
+                auditSql,
+                new
+                {
+                    OrderId     = orderId,
+                    AdminUserId = adminUserId,
+                    OldStatus   = currentStatus,
+                    NewStatus   = normalizedNew,
+                    Reason      = reason.Trim()
+                },
+                transaction);
+
+            transaction.Commit();
+            return OrderStatusUpdateResult.Updated;
+        }
+        catch
+        {
+            try { transaction.Rollback(); } catch { /* Preserve original exception. */ }
+            throw;
+        }
+    }
+
+    /// <summary>Lightweight projection used only by AdminUpdateStatusAsync.</summary>
+    private sealed class OrderSnapshot
+    {
+        public long OrderId { get; init; }
+        public string Status { get; init; } = string.Empty;
+        public string PaymentStatus { get; init; } = string.Empty;
     }
 
 }
