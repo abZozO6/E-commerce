@@ -6,6 +6,7 @@ using Ecommerce.Application_BAL_;
 using Ecommerce.Application_BAL_.Helpers;
 using Ecommerce.Core.Interfaces;
 using Ecommerce.Infrastructure;
+using Ecommerce.Infrastructure_DAL_.BackgroundServices;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 
@@ -21,6 +22,11 @@ builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
 // Application and Infrastructure
 builder.Services.AddApplication(builder.Configuration);
 builder.Services.AddInfrastructure();
+
+// Payment expiration background service
+builder.Services.Configure<PaymentExpirationOptions>(
+    builder.Configuration.GetSection(PaymentExpirationOptions.SectionName));
+builder.Services.AddHostedService<PaymentExpirationService>();
 
 // JWT Authentication Configuration
 var jwtSettings = builder.Configuration

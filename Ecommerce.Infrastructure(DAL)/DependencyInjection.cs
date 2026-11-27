@@ -1,5 +1,7 @@
 ﻿using Ecommerce.Core.Interfaces;
+using Ecommerce.Infrastructure_DAL_.BackgroundServices;
 using Ecommerce.Infrastructure_DAL_.Data;
+using Ecommerce.Infrastructure_DAL_.Providers;
 using Ecommerce.Infrastructure_DAL_.Repositories;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -13,6 +15,10 @@ public static class DependencyInjection
     public static IServiceCollection AddInfrastructure(this IServiceCollection services)
     {
         services.AddScoped<IDbConnectionFactory, DbConnectionFactory>();
+
+        // Payment provider — replace SimulatedPaymentProvider with a real implementation
+        // (e.g. StripePaymentProvider) before going to production.
+        services.AddScoped<IPaymentProvider, SimulatedPaymentProvider>();
 
         services.AddScoped<IAddressRepository, AddressRepository>();
         services.AddScoped<IBrandRepository, BrandRepository>();

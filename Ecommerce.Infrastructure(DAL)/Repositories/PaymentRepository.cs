@@ -1,4 +1,5 @@
-﻿using Dapper;
+﻿using System.Data;
+using Dapper;
 using Ecommerce.Core.Entities;
 using Ecommerce.Core.Enums;
 using Ecommerce.Core.Interfaces;
@@ -68,8 +69,7 @@ public class PaymentRepository : IPaymentRepository
             ORDER BY CreatedAt DESC, PaymentId DESC;
             """;
 
-        return await connection.QueryAsync<Payment>(
-            sql, new { OrderId = orderId });
+        return await connection.QueryAsync<Payment>(sql, new { OrderId = orderId });
     }
 
     public async Task<Payment?> GetByTransactionReferenceAsync(string transactionReference)
@@ -78,15 +78,26 @@ public class PaymentRepository : IPaymentRepository
 
         using var connection = _connectionFactory.CreateConnection();
 
+        // The database guarantees uniqueness by (Provider, ProviderReference),
+        // not by ProviderReference alone. Detect ambiguity instead of returning
+        // an arbitrary payment from a different provider.
         const string sql = """
-            SELECT PaymentId, OrderId, Provider, ProviderReference,
+            SELECT TOP (2)
+                   PaymentId, OrderId, Provider, ProviderReference,
                    Amount, Status, PaidAt, CreatedAt
             FROM dbo.Payments
-            WHERE ProviderReference = @ProviderReference;
+            WHERE ProviderReference = @ProviderReference
+            ORDER BY CreatedAt DESC, PaymentId DESC;
             """;
 
-        return await connection.QuerySingleOrDefaultAsync<Payment>(
-            sql, new { ProviderReference = transactionReference.Trim() });
+        var matches = (await connection.QueryAsync<Payment>(
+            sql, new { ProviderReference = transactionReference.Trim() })).AsList();
+
+        if (matches.Count > 1)
+            throw new InvalidOperationException(
+                "Transaction reference is ambiguous. Look it up using both Provider and ProviderReference.");
+
+        return matches.SingleOrDefault();
     }
 
     public async Task<IEnumerable<Payment>> GetAllAsync(string? status = null)
@@ -105,7 +116,8 @@ public class PaymentRepository : IPaymentRepository
             """;
 
         return await connection.QueryAsync<Payment>(
-            sql, new { Status = string.IsNullOrWhiteSpace(status) ? null : status.Trim() });
+            sql,
+            new { Status = string.IsNullOrWhiteSpace(status) ? null : status.Trim() });
     }
 
     public async Task<long> CreateAsync(Payment payment)
@@ -129,54 +141,12 @@ public class PaymentRepository : IPaymentRepository
             throw new ArgumentException("Provider reference cannot exceed 200 characters.", nameof(payment));
 
         if (payment.Amount <= 0)
-            throw new ArgumentOutOfRangeException(nameof(payment.Amount), "Payment amount must be greater than zero.");
+            throw new ArgumentOutOfRangeException(
+                nameof(payment.Amount), "Payment amount must be greater than zero.");
 
-        // A newly-created payment must always start as Pending.
+        // Never trust caller-supplied initial state.
         payment.Status = "Pending";
         payment.PaidAt = null;
-
-        using var connection = _connectionFactory.CreateConnection();
-
-        const string sql = """
-            INSERT INTO dbo.Payments (
-                OrderId, Provider, ProviderReference,
-                Amount, Status, PaidAt
-            )
-            VALUES (
-                @OrderId, @Provider, @ProviderReference,
-                @Amount, 'Pending', NULL
-            );
-
-            SELECT CAST(SCOPE_IDENTITY() AS BIGINT);
-            """;
-
-        return await connection.ExecuteScalarAsync<long>(sql, payment);
-    }
-
-    /// <summary>
-    /// Applies a verified payment-provider status update and synchronizes
-    /// Orders.PaymentStatus in the same database transaction.
-    /// This method must only be called after authenticating the provider callback/webhook.
-    /// </summary>
-    public async Task<bool> UpdateStatusAsync(long paymentId, string newStatus, string? transactionReference = null)
-    {
-        if (paymentId <= 0)
-            throw new ArgumentOutOfRangeException(nameof(paymentId));
-
-        ArgumentException.ThrowIfNullOrWhiteSpace(newStatus);
-        newStatus = NormalizeStatus(newStatus);
-
-        if (!IsKnownStatus(newStatus))
-            throw new ArgumentException("Invalid payment status.", nameof(newStatus));
-
-        var normalizedReference = string.IsNullOrWhiteSpace(transactionReference)
-            ? null
-            : transactionReference.Trim();
-
-        if (normalizedReference?.Length > 200)
-            throw new ArgumentException(
-                "Transaction reference cannot exceed 200 characters.",
-                nameof(transactionReference));
 
         using var connection = _connectionFactory.CreateConnection();
         await connection.OpenAsync();
@@ -184,44 +154,252 @@ public class PaymentRepository : IPaymentRepository
 
         try
         {
-            const string selectSql = """
-                SELECT
-                    p.PaymentId,
-                    p.OrderId,
-                    p.Provider,
-                    p.ProviderReference,
-                    p.Status,
-                    o.Status AS OrderStatus,
-                    o.PaymentStatus AS OrderPaymentStatus
-                FROM dbo.Payments AS p WITH (UPDLOCK, HOLDLOCK)
-                INNER JOIN dbo.Orders AS o WITH (UPDLOCK, HOLDLOCK)
-                    ON o.OrderId = p.OrderId
-                WHERE p.PaymentId = @PaymentId;
+            // All payment write operations lock Order first, then Payment rows.
+            // This consistent order reduces deadlock risk and serializes attempts per order.
+            const string orderSql = """
+                SELECT OrderId, Status, PaymentStatus, TotalAmount
+                FROM dbo.Orders WITH (UPDLOCK, HOLDLOCK)
+                WHERE OrderId = @OrderId;
+                """;
+
+            var order = await connection.QuerySingleOrDefaultAsync<OrderPaymentCreationSnapshot>(
+                orderSql, new { payment.OrderId }, transaction);
+
+            if (order is null)
+                throw new InvalidOperationException("Order was not found.");
+
+            EnsureOrderCanAcceptPayment(order.Status, order.PaymentStatus);
+
+            if (order.TotalAmount <= 0 || payment.Amount != order.TotalAmount)
+                throw new InvalidOperationException("Payment amount does not match the order total.");
+
+            const string pendingPaymentSql = """
+                SELECT COUNT(1)
+                FROM dbo.Payments WITH (UPDLOCK, HOLDLOCK)
+                WHERE OrderId = @OrderId
+                  AND Status = 'Pending';
+                """;
+
+            var pendingCount = await connection.ExecuteScalarAsync<int>(
+                pendingPaymentSql, new { payment.OrderId }, transaction);
+
+            if (pendingCount > 0)
+                throw new InvalidOperationException("This order already has a pending payment.");
+
+            const string insertSql = """
+                INSERT INTO dbo.Payments
+                    (OrderId, Provider, ProviderReference, Amount, Status, PaidAt)
+                VALUES
+                    (@OrderId, @Provider, @ProviderReference, @Amount, 'Pending', NULL);
+
+                SELECT CAST(SCOPE_IDENTITY() AS BIGINT);
+                """;
+
+            var paymentId = await connection.ExecuteScalarAsync<long>(insertSql, payment, transaction);
+            transaction.Commit();
+            return paymentId;
+        }
+        catch (SqlException ex) when (ex.Number is 2601 or 2627)
+        {
+            TryRollback(transaction);
+            throw new InvalidOperationException(
+                "A conflicting payment already exists for this order or transaction reference.", ex);
+        }
+        catch
+        {
+            TryRollback(transaction);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Applies a verified provider result. The caller must authenticate the provider callback
+    /// before invoking this method. Payment and order updates are atomic.
+    /// </summary>
+    public async Task<bool> UpdateStatusAsync(
+        long paymentId,
+        string newStatus,
+        string? transactionReference = null)
+    {
+        ValidateStatusUpdateArguments(paymentId, newStatus, transactionReference);
+
+        var result = await ApplyStatusUpdateAsync(
+            paymentId,
+            NormalizeStatus(newStatus),
+            NormalizeReference(transactionReference),
+            adminUserId: null,
+            reason: null);
+
+        return result != PaymentStatusUpdateResult.NotFound;
+    }
+
+    /// <summary>
+    /// Admin-only status update. The payment, order, and audit record are committed atomically.
+    /// </summary>
+    public async Task<PaymentStatusUpdateResult> AdminUpdateStatusAsync(
+        long paymentId,
+        string newStatus,
+        string? transactionReference,
+        long adminUserId,
+        string reason)
+    {
+        ValidateStatusUpdateArguments(paymentId, newStatus, transactionReference);
+
+        if (adminUserId <= 0)
+            throw new ArgumentOutOfRangeException(nameof(adminUserId));
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+        reason = reason.Trim();
+
+        if (reason.Length > 500)
+            throw new ArgumentException("Reason cannot exceed 500 characters.", nameof(reason));
+
+        return await ApplyStatusUpdateAsync(
+            paymentId,
+            NormalizeStatus(newStatus),
+            NormalizeReference(transactionReference),
+            adminUserId,
+            reason);
+    }
+
+    /// <summary>
+    /// System-initiated expiration of a pending payment. Atomically transitions to Cancelled and records an audit log.
+    /// </summary>
+    public async Task<PaymentStatusUpdateResult> ExpirePaymentAsync(long paymentId, string reason)
+    {
+        if (paymentId <= 0)
+            throw new ArgumentOutOfRangeException(nameof(paymentId));
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+        reason = reason.Trim();
+
+        if (reason.Length > 500)
+            throw new ArgumentException("Reason cannot exceed 500 characters.", nameof(reason));
+
+        return await ApplyStatusUpdateAsync(
+            paymentId,
+            newStatus: "Cancelled",
+            normalizedReference: null,
+            adminUserId: null,
+            reason: reason);
+    }
+
+    private async Task<PaymentStatusUpdateResult> ApplyStatusUpdateAsync(
+        long paymentId,
+        string newStatus,
+        string? normalizedReference,
+        long? adminUserId,
+        string? reason)
+    {
+        using var connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync();
+        using var transaction = connection.BeginTransaction();
+
+        try
+        {
+            // First read only the immutable OrderId. Do not take a payment update lock yet.
+            const string findOrderIdSql = """
+                SELECT OrderId
+                FROM dbo.Payments
+                WHERE PaymentId = @PaymentId;
+                """;
+
+            var orderId = await connection.QuerySingleOrDefaultAsync<long?>(
+                findOrderIdSql, new { PaymentId = paymentId }, transaction);
+
+            if (!orderId.HasValue)
+            {
+                transaction.Rollback();
+                return PaymentStatusUpdateResult.NotFound;
+            }
+
+            // Lock order first. CreateAsync and all status updates use this same lock order.
+            const string orderSql = """
+                SELECT OrderId, Status AS OrderStatus, PaymentStatus AS OrderPaymentStatus
+                FROM dbo.Orders WITH (UPDLOCK, HOLDLOCK)
+                WHERE OrderId = @OrderId;
+                """;
+
+            var order = await connection.QuerySingleOrDefaultAsync<OrderPaymentStatusSnapshot>(
+                orderSql, new { OrderId = orderId.Value }, transaction);
+
+            if (order is null)
+                throw new InvalidOperationException("The order associated with this payment was not found.");
+
+            // Now lock the payment row after acquiring the order lock.
+            const string paymentSql = """
+                SELECT PaymentId, OrderId, Provider, ProviderReference, Status
+                FROM dbo.Payments WITH (UPDLOCK, HOLDLOCK)
+                WHERE PaymentId = @PaymentId AND OrderId = @OrderId;
                 """;
 
             var payment = await connection.QuerySingleOrDefaultAsync<PaymentStatusSnapshot>(
-                selectSql,
-                new { PaymentId = paymentId },
+                paymentSql,
+                new { PaymentId = paymentId, OrderId = orderId.Value },
                 transaction);
 
             if (payment is null)
             {
                 transaction.Rollback();
-                return false;
+                return PaymentStatusUpdateResult.NotFound;
             }
 
+            // Enforce provider-reference uniqueness before both normal updates and retries.
+            if (normalizedReference is not null)
+            {
+                const string duplicateReferenceSql = """
+                    SELECT TOP (1) PaymentId
+                    FROM dbo.Payments WITH (UPDLOCK, HOLDLOCK)
+                    WHERE Provider = @Provider
+                      AND ProviderReference = @ProviderReference
+                      AND PaymentId <> @PaymentId;
+                    """;
+
+                var duplicatePaymentId = await connection.QuerySingleOrDefaultAsync<long?>(
+                    duplicateReferenceSql,
+                    new
+                    {
+                        payment.Provider,
+                        ProviderReference = normalizedReference,
+                        PaymentId = paymentId
+                    },
+                    transaction);
+
+                if (duplicatePaymentId.HasValue)
+                    throw new InvalidOperationException(
+                        "Transaction reference is already associated with another payment.");
+            }
+
+            // Idempotent retry: same status is accepted, but conflicting references are rejected.
             if (string.Equals(payment.Status, newStatus, StringComparison.OrdinalIgnoreCase))
             {
                 if (normalizedReference is not null &&
                     payment.ProviderReference is not null &&
-                    !string.Equals(payment.ProviderReference, normalizedReference, StringComparison.OrdinalIgnoreCase))
+                    !string.Equals(payment.ProviderReference, normalizedReference,
+                        StringComparison.OrdinalIgnoreCase))
                 {
                     throw new InvalidOperationException(
                         "Payment has already been finalized with a different transaction reference.");
                 }
 
+                // If the first request did not include a reference, safely attach it on retry.
+                if (normalizedReference is not null && payment.ProviderReference is null)
+                {
+                    const string attachReferenceSql = """
+                        UPDATE dbo.Payments
+                        SET ProviderReference = @ProviderReference
+                        WHERE PaymentId = @PaymentId
+                          AND ProviderReference IS NULL;
+                        """;
+
+                    await connection.ExecuteAsync(
+                        attachReferenceSql,
+                        new { PaymentId = paymentId, ProviderReference = normalizedReference },
+                        transaction);
+                }
+
                 transaction.Commit();
-                return true;
+                return PaymentStatusUpdateResult.NoChange;
             }
 
             if (!AllowedTransitions.TryGetValue(payment.Status, out var allowed) ||
@@ -233,45 +411,26 @@ public class PaymentRepository : IPaymentRepository
 
             if (string.Equals(newStatus, "Succeeded", StringComparison.OrdinalIgnoreCase))
             {
-                if (string.Equals(payment.OrderStatus, "Cancelled", StringComparison.OrdinalIgnoreCase))
-                {
-                    throw new InvalidOperationException(
-                        "Cannot mark a cancelled order as paid.");
-                }
+                EnsureOrderCanBeMarkedPaid(order.OrderStatus, order.OrderPaymentStatus);
 
-                if (string.Equals(payment.OrderPaymentStatus, "Refunded", StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(payment.OrderPaymentStatus, "PartiallyRefunded", StringComparison.OrdinalIgnoreCase))
-                {
-                    throw new InvalidOperationException(
-                        "Cannot mark a refunded order as paid.");
-                }
-            }
-
-            if (normalizedReference is not null)
-            {
-                const string duplicateRefSql = """
+                // Defense in depth: even if historical or manually inserted data exists,
+                // only one payment for this order may become successful.
+                const string succeededPaymentSql = """
                     SELECT TOP (1) PaymentId
                     FROM dbo.Payments WITH (UPDLOCK, HOLDLOCK)
-                    WHERE Provider = @Provider
-                      AND ProviderReference = @ProviderReference
+                    WHERE OrderId = @OrderId
+                      AND Status = 'Succeeded'
                       AND PaymentId <> @PaymentId;
                     """;
 
-                var conflictingPaymentId = await connection.QuerySingleOrDefaultAsync<long?>(
-                    duplicateRefSql,
-                    new
-                    {
-                        payment.Provider,
-                        ProviderReference = normalizedReference,
-                        PaymentId = paymentId
-                    },
+                var succeededPaymentId = await connection.QuerySingleOrDefaultAsync<long?>(
+                    succeededPaymentSql,
+                    new { OrderId = payment.OrderId, PaymentId = paymentId },
                     transaction);
 
-                if (conflictingPaymentId.HasValue)
-                {
+                if (succeededPaymentId.HasValue)
                     throw new InvalidOperationException(
-                        $"Transaction reference '{normalizedReference}' is already used by another payment.");
-                }
+                        "Another payment has already succeeded for this order.");
             }
 
             const string updatePaymentSql = """
@@ -285,7 +444,7 @@ public class PaymentRepository : IPaymentRepository
                 WHERE PaymentId = @PaymentId;
                 """;
 
-            await connection.ExecuteAsync(
+            var affectedPayments = await connection.ExecuteAsync(
                 updatePaymentSql,
                 new
                 {
@@ -295,11 +454,14 @@ public class PaymentRepository : IPaymentRepository
                 },
                 transaction);
 
-            var targetOrderPaymentStatus = ResolveOrderPaymentStatus(
-                newStatus,
-                payment.OrderPaymentStatus);
+            if (affectedPayments != 1)
+                throw new InvalidOperationException("Payment status could not be updated.");
 
-            if (!string.Equals(targetOrderPaymentStatus, payment.OrderPaymentStatus, StringComparison.OrdinalIgnoreCase))
+            var targetOrderPaymentStatus = ResolveOrderPaymentStatus(
+                newStatus, order.OrderPaymentStatus);
+
+            if (!string.Equals(targetOrderPaymentStatus, order.OrderPaymentStatus,
+                    StringComparison.OrdinalIgnoreCase))
             {
                 const string updateOrderSql = """
                     UPDATE dbo.Orders
@@ -307,266 +469,115 @@ public class PaymentRepository : IPaymentRepository
                     WHERE OrderId = @OrderId;
                     """;
 
-                var orderRows = await connection.ExecuteAsync(
+                var affectedOrders = await connection.ExecuteAsync(
                     updateOrderSql,
                     new
                     {
-                        OrderId = payment.OrderId,
+                        OrderId = order.OrderId,
                         PaymentStatus = targetOrderPaymentStatus
                     },
                     transaction);
 
-                if (orderRows == 0)
-                    throw new InvalidOperationException("The order associated with this payment was not found.");
+                if (affectedOrders != 1)
+                    throw new InvalidOperationException("Order payment status could not be updated.");
             }
 
-            transaction.Commit();
-            return true;
-        }
-        catch (SqlException ex) when (ex.Number is 2601 or 2627)
-        {
-            try { transaction.Rollback(); } catch { }
-            throw new InvalidOperationException(
-                "Transaction reference is already associated with another payment.",
-                ex);
-        }
-        catch
-        {
-            try
+            // Record audit log if this is an admin action or if a reason was provided (e.g. system expiration).
+            if (adminUserId.HasValue || !string.IsNullOrWhiteSpace(reason))
             {
-                transaction.Rollback();
-            }
-            catch
-            {
-                // Preserve the original exception.
-            }
-
-            throw;
-        }
-    }
-
-    /// <summary>
-    /// Admin-only: updates a payment status and atomically inserts an audit log
-    /// record — both inside the same SQL Server transaction.
-    /// Reuses the identical transition rules, locking, and order-sync logic as
-    /// <see cref="UpdateStatusAsync"/>.
-    /// </summary>
-    public async Task<PaymentStatusUpdateResult> AdminUpdateStatusAsync(
-        long paymentId,
-        string newStatus,
-        string? transactionReference,
-        long adminUserId,
-        string reason)
-    {
-        if (paymentId <= 0)
-            throw new ArgumentOutOfRangeException(nameof(paymentId));
-
-        if (adminUserId <= 0)
-            throw new ArgumentOutOfRangeException(nameof(adminUserId));
-
-        ArgumentException.ThrowIfNullOrWhiteSpace(newStatus);
-        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
-
-        newStatus = NormalizeStatus(newStatus);
-
-        if (!IsKnownStatus(newStatus))
-            throw new ArgumentException("Invalid payment status.", nameof(newStatus));
-
-        reason = reason.Trim();
-        if (reason.Length > 500)
-            throw new ArgumentException("Reason cannot exceed 500 characters.", nameof(reason));
-
-        var normalizedReference = string.IsNullOrWhiteSpace(transactionReference)
-            ? null
-            : transactionReference.Trim();
-
-        if (normalizedReference?.Length > 200)
-            throw new ArgumentException(
-                "Transaction reference cannot exceed 200 characters.",
-                nameof(transactionReference));
-
-        using var connection = _connectionFactory.CreateConnection();
-        await connection.OpenAsync();
-        using var transaction = connection.BeginTransaction();
-
-        try
-        {
-            const string selectSql = """
-                SELECT
-                    p.PaymentId,
-                    p.OrderId,
-                    p.Provider,
-                    p.ProviderReference,
-                    p.Status,
-                    o.Status AS OrderStatus,
-                    o.PaymentStatus AS OrderPaymentStatus
-                FROM dbo.Payments AS p WITH (UPDLOCK, HOLDLOCK)
-                INNER JOIN dbo.Orders AS o WITH (UPDLOCK, HOLDLOCK)
-                    ON o.OrderId = p.OrderId
-                WHERE p.PaymentId = @PaymentId;
-                """;
-
-            var snapshot = await connection.QuerySingleOrDefaultAsync<PaymentStatusSnapshot>(
-                selectSql,
-                new { PaymentId = paymentId },
-                transaction);
-
-            if (snapshot is null)
-            {
-                transaction.Rollback();
-                return PaymentStatusUpdateResult.NotFound;
-            }
-
-            var oldStatus = snapshot.Status;
-
-            // No-op if already in the target status (idempotent for same reference)
-            if (string.Equals(oldStatus, newStatus, StringComparison.OrdinalIgnoreCase))
-            {
-                if (normalizedReference is not null &&
-                    snapshot.ProviderReference is not null &&
-                    !string.Equals(snapshot.ProviderReference, normalizedReference, StringComparison.OrdinalIgnoreCase))
-                {
-                    throw new InvalidOperationException(
-                        "Payment has already been finalized with a different transaction reference.");
-                }
-
-                transaction.Commit();
-                return PaymentStatusUpdateResult.NoChange;
-            }
-
-            // Validate transition
-            if (!AllowedTransitions.TryGetValue(oldStatus, out var allowed) ||
-                !allowed.Contains(newStatus))
-            {
-                throw new InvalidOperationException(
-                    $"Payment cannot transition from '{oldStatus}' to '{newStatus}'.");
-            }
-
-            // Guard: cannot mark a cancelled order as paid
-            if (string.Equals(newStatus, "Succeeded", StringComparison.OrdinalIgnoreCase))
-            {
-                if (string.Equals(snapshot.OrderStatus, "Cancelled", StringComparison.OrdinalIgnoreCase))
-                    throw new InvalidOperationException("Cannot mark a cancelled order as paid.");
-
-                if (string.Equals(snapshot.OrderPaymentStatus, "Refunded", StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(snapshot.OrderPaymentStatus, "PartiallyRefunded", StringComparison.OrdinalIgnoreCase))
-                    throw new InvalidOperationException("Cannot mark a refunded order as paid.");
-            }
-
-            // Duplicate transaction-reference guard
-            if (normalizedReference is not null)
-            {
-                const string duplicateRefSql = """
-                    SELECT TOP (1) PaymentId
-                    FROM dbo.Payments WITH (UPDLOCK, HOLDLOCK)
-                    WHERE Provider = @Provider
-                      AND ProviderReference = @ProviderReference
-                      AND PaymentId <> @PaymentId;
+                const string insertAuditSql = """
+                    INSERT INTO dbo.PaymentStatusAuditLogs
+                        (PaymentId, AdminUserId, OldStatus, NewStatus,
+                         TransactionReference, Reason, ChangedAt)
+                    VALUES
+                        (@PaymentId, @AdminUserId, @OldStatus, @NewStatus,
+                         @TransactionReference, @Reason, SYSUTCDATETIME());
                     """;
 
-                var conflictingId = await connection.QuerySingleOrDefaultAsync<long?>(
-                    duplicateRefSql,
+                await connection.ExecuteAsync(
+                    insertAuditSql,
                     new
                     {
-                        snapshot.Provider,
-                        ProviderReference = normalizedReference,
-                        PaymentId = paymentId
+                        PaymentId = paymentId,
+                        AdminUserId = adminUserId,
+                        OldStatus = payment.Status,
+                        NewStatus = newStatus,
+                        TransactionReference = normalizedReference,
+                        Reason = reason ?? "Status update"
                     },
                     transaction);
-
-                if (conflictingId.HasValue)
-                    throw new InvalidOperationException(
-                        $"Transaction reference '{normalizedReference}' is already used by another payment.");
             }
-
-            // Update payment
-            const string updatePaymentSql = """
-                UPDATE dbo.Payments
-                SET Status = @NewStatus,
-                    ProviderReference = COALESCE(@ProviderReference, ProviderReference),
-                    PaidAt = CASE
-                        WHEN @NewStatus = 'Succeeded' THEN COALESCE(PaidAt, SYSUTCDATETIME())
-                        ELSE PaidAt
-                    END
-                WHERE PaymentId = @PaymentId;
-                """;
-
-            await connection.ExecuteAsync(
-                updatePaymentSql,
-                new
-                {
-                    PaymentId = paymentId,
-                    NewStatus = newStatus,
-                    ProviderReference = normalizedReference
-                },
-                transaction);
-
-            // Synchronize order payment status
-            var targetOrderPaymentStatus = ResolveOrderPaymentStatus(
-                newStatus,
-                snapshot.OrderPaymentStatus);
-
-            if (!string.Equals(targetOrderPaymentStatus, snapshot.OrderPaymentStatus, StringComparison.OrdinalIgnoreCase))
-            {
-                const string updateOrderSql = """
-                    UPDATE dbo.Orders
-                    SET PaymentStatus = @PaymentStatus
-                    WHERE OrderId = @OrderId;
-                    """;
-
-                var orderRows = await connection.ExecuteAsync(
-                    updateOrderSql,
-                    new
-                    {
-                        OrderId = snapshot.OrderId,
-                        PaymentStatus = targetOrderPaymentStatus
-                    },
-                    transaction);
-
-                if (orderRows == 0)
-                    throw new InvalidOperationException("The order associated with this payment was not found.");
-            }
-
-            // Insert audit log — same transaction (atomic)
-            const string insertAuditSql = """
-                INSERT INTO dbo.PaymentStatusAuditLogs
-                    (PaymentId, AdminUserId, OldStatus, NewStatus,
-                     TransactionReference, Reason, ChangedAt)
-                VALUES
-                    (@PaymentId, @AdminUserId, @OldStatus, @NewStatus,
-                     @TransactionReference, @Reason, SYSUTCDATETIME());
-                """;
-
-            var auditLog = new PaymentStatusAuditLog
-            {
-                PaymentId            = paymentId,
-                AdminUserId          = adminUserId,
-                OldStatus            = oldStatus,
-                NewStatus            = newStatus,
-                TransactionReference = normalizedReference,
-                Reason               = reason
-            };
-
-            await connection.ExecuteAsync(
-                insertAuditSql,
-                auditLog,
-                transaction);
 
             transaction.Commit();
             return PaymentStatusUpdateResult.Updated;
         }
         catch (SqlException ex) when (ex.Number is 2601 or 2627)
         {
-            try { transaction.Rollback(); } catch { }
+            TryRollback(transaction);
             throw new InvalidOperationException(
-                "Transaction reference is already associated with another payment.",
-                ex);
+                "A duplicate payment transaction reference or active payment was detected.", ex);
         }
         catch
         {
-            try { transaction.Rollback(); } catch { }
+            TryRollback(transaction);
             throw;
         }
+    }
+
+    private static void EnsureOrderCanAcceptPayment(string orderStatus, string orderPaymentStatus)
+    {
+        if (string.Equals(orderStatus, "Cancelled", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Cannot create a payment for a cancelled order.");
+
+        if (string.Equals(orderPaymentStatus, "Paid", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(orderPaymentStatus, "Refunded", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(orderPaymentStatus, "PartiallyRefunded", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("This order cannot accept another payment.");
+        }
+    }
+
+    private static void EnsureOrderCanBeMarkedPaid(string orderStatus, string orderPaymentStatus)
+    {
+        if (string.Equals(orderStatus, "Cancelled", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Cannot mark a cancelled order as paid.");
+
+        if (string.Equals(orderPaymentStatus, "Paid", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("This order has already been paid by another payment.");
+
+        if (string.Equals(orderPaymentStatus, "Refunded", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(orderPaymentStatus, "PartiallyRefunded", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Cannot mark a refunded order as paid.");
+        }
+    }
+
+    private static void ValidateStatusUpdateArguments(
+        long paymentId, string newStatus, string? transactionReference)
+    {
+        if (paymentId <= 0)
+            throw new ArgumentOutOfRangeException(nameof(paymentId));
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(newStatus);
+        var normalizedStatus = NormalizeStatus(newStatus);
+
+        if (!IsKnownStatus(normalizedStatus))
+            throw new ArgumentException("Invalid payment status.", nameof(newStatus));
+
+        var normalizedReference = NormalizeReference(transactionReference);
+        if (normalizedReference?.Length > 200)
+            throw new ArgumentException(
+                "Transaction reference cannot exceed 200 characters.",
+                nameof(transactionReference));
+    }
+
+    private static string? NormalizeReference(string? reference) =>
+        string.IsNullOrWhiteSpace(reference) ? null : reference.Trim();
+
+    private static void TryRollback(IDbTransaction transaction)
+    {
+        try { transaction.Rollback(); }
+        catch { /* Preserve the original exception. */ }
     }
 
     private static bool IsKnownStatus(string status) =>
@@ -591,7 +602,9 @@ public class PaymentRepository : IPaymentRepository
         };
     }
 
-    private static string ResolveOrderPaymentStatus(string newPaymentStatus, string currentOrderPaymentStatus)
+    private static string ResolveOrderPaymentStatus(
+        string newPaymentStatus,
+        string currentOrderPaymentStatus)
     {
         if (string.Equals(newPaymentStatus, "Succeeded", StringComparison.OrdinalIgnoreCase))
             return "Paid";
@@ -601,7 +614,7 @@ public class PaymentRepository : IPaymentRepository
 
         if (string.Equals(newPaymentStatus, "Failed", StringComparison.OrdinalIgnoreCase))
         {
-            // Prevent late failure callbacks from downgrading already Paid/Refunded orders.
+            // A late failure must never downgrade an order already paid or refunded.
             if (string.Equals(currentOrderPaymentStatus, "Paid", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(currentOrderPaymentStatus, "Refunded", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(currentOrderPaymentStatus, "PartiallyRefunded", StringComparison.OrdinalIgnoreCase))
@@ -612,7 +625,7 @@ public class PaymentRepository : IPaymentRepository
             return "Failed";
         }
 
-        // Cancelled (and Pending) preserve the existing order payment status.
+        // Pending and Cancelled do not change the order's current payment status.
         return currentOrderPaymentStatus;
     }
 
@@ -623,7 +636,20 @@ public class PaymentRepository : IPaymentRepository
         public string Provider { get; set; } = string.Empty;
         public string? ProviderReference { get; set; }
         public string Status { get; set; } = string.Empty;
+    }
+
+    private sealed class OrderPaymentStatusSnapshot
+    {
+        public long OrderId { get; set; }
         public string OrderStatus { get; set; } = string.Empty;
         public string OrderPaymentStatus { get; set; } = string.Empty;
+    }
+
+    private sealed class OrderPaymentCreationSnapshot
+    {
+        public long OrderId { get; set; }
+        public string Status { get; set; } = string.Empty;
+        public string PaymentStatus { get; set; } = string.Empty;
+        public decimal TotalAmount { get; set; }
     }
 }

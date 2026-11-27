@@ -14,12 +14,19 @@ public interface IPaymentService
 
     Task<IEnumerable<PaymentDto>> GetMyPaymentsByOrderIdAsync(long orderId, long userId);
 
-    Task<long> InitiatePaymentAsync(long orderId, long userId, CreatePaymentDto dto);
+    Task<IEnumerable<PaymentDto>> GetAllAsync(string? status = null);
+
+    Task<InitiatePaymentResult> InitiatePaymentAsync(long orderId, long userId, CreatePaymentDto dto);
 
     Task<bool> HandleVerifiedCallbackAsync(
         long paymentId,
         string newStatus,
         string? transactionReference = null);
+
+    /// <summary>
+    /// Verifies provider signature and processes an inbound webhook notification.
+    /// </summary>
+    Task<bool> ProcessWebhookAsync(string payload, string signature);
 
     /// <summary>
     /// Admin-only: manually updates a payment status and records an audit log entry atomically.
@@ -29,6 +36,14 @@ public interface IPaymentService
         long paymentId,
         long adminUserId,
         AdminUpdatePaymentStatusDto dto);
+
+    /// <summary>
+    /// Admin-only: initiates a full refund via the provider, updates status to Refunded, and writes an audit log.
+    /// </summary>
+    Task<PaymentStatusUpdateResult> RefundAsync(
+        long paymentId,
+        long adminUserId,
+        string reason);
 
     /// <summary>
     /// Admin-only: retrieves the audit history for a specific payment.

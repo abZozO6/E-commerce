@@ -29,4 +29,9 @@ public interface IPaymentRepository
         string? transactionReference,
         long adminUserId,
         string reason);
+
+    /// <summary>
+    /// System-initiated expiration of a pending payment. Atomically transitions to Cancelled and records an audit log.
+    /// </summary>
+    Task<PaymentStatusUpdateResult> ExpirePaymentAsync(long paymentId, string reason);
 }

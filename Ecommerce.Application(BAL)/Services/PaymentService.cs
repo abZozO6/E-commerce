@@ -11,15 +11,18 @@ public class PaymentService : IPaymentService
     private readonly IPaymentRepository _paymentRepository;
     private readonly IOrderRepository _orderRepository;
     private readonly IPaymentStatusAuditRepository _auditRepository;
+    private readonly IPaymentProvider _paymentProvider;
 
     public PaymentService(
         IPaymentRepository paymentRepository,
         IOrderRepository orderRepository,
-        IPaymentStatusAuditRepository auditRepository)
+        IPaymentStatusAuditRepository auditRepository,
+        IPaymentProvider paymentProvider)
     {
         _paymentRepository = paymentRepository;
         _orderRepository = orderRepository;
         _auditRepository = auditRepository;
+        _paymentProvider = paymentProvider;
     }
 
     public async Task<PaymentDto?> GetMyPaymentByIdAsync(
@@ -59,7 +62,13 @@ public class PaymentService : IPaymentService
         return payments.Select(MapToDto);
     }
 
-    public async Task<long> InitiatePaymentAsync(
+    public async Task<IEnumerable<PaymentDto>> GetAllAsync(string? status = null)
+    {
+        var payments = await _paymentRepository.GetAllAsync(status);
+        return payments.Select(MapToDto);
+    }
+
+    public async Task<InitiatePaymentResult> InitiatePaymentAsync(
         long orderId,
         long userId,
         CreatePaymentDto dto)
@@ -103,16 +112,34 @@ public class PaymentService : IPaymentService
             throw new InvalidOperationException(
                 "Order amount must be greater than zero.");
 
+        // Create a provider session before inserting the payment record.
+        var session = await _paymentProvider.CreateSessionAsync(
+            orderId,
+            order.TotalAmount,
+            currency: "USD");
+
+        if (!session.Success)
+            throw new InvalidOperationException(
+                $"Payment provider could not create a session: {session.ErrorMessage}");
+
         var payment = new Payment
         {
             OrderId = orderId,
             Provider = provider,
+            ProviderReference = session.ProviderSessionId,
             Amount = order.TotalAmount,
             Status = "Pending",
             PaidAt = null
         };
 
-        return await _paymentRepository.CreateAsync(payment);
+        var paymentId = await _paymentRepository.CreateAsync(payment);
+
+        return new InitiatePaymentResult
+        {
+            PaymentId = paymentId,
+            CheckoutUrl = session.CheckoutUrl,
+            ProviderSessionId = session.ProviderSessionId
+        };
     }
 
     /// <summary>
@@ -150,6 +177,50 @@ public class PaymentService : IPaymentService
             paymentId,
             normalizedStatus,
             transactionReference);
+    }
+
+    /// <summary>
+    /// Verifies provider signature and processes an inbound webhook notification.
+    /// </summary>
+    public async Task<bool> ProcessWebhookAsync(string payload, string signature)
+    {
+        if (string.IsNullOrWhiteSpace(payload))
+            throw new ArgumentException("Webhook payload cannot be empty.");
+
+        if (string.IsNullOrWhiteSpace(signature))
+            throw new ArgumentException("Webhook signature header is required.");
+
+        var verification = await _paymentProvider.VerifyNotificationAsync(payload, signature);
+
+        if (!verification.IsVerified)
+            throw new UnauthorizedAccessException(
+                verification.ErrorMessage ?? "Webhook signature verification failed.");
+
+        long paymentId;
+        if (verification.PaymentId.HasValue)
+        {
+            paymentId = verification.PaymentId.Value;
+        }
+        else if (!string.IsNullOrWhiteSpace(verification.ProviderReference))
+        {
+            var payment = await _paymentRepository.GetByTransactionReferenceAsync(verification.ProviderReference);
+            if (payment is null)
+                throw new KeyNotFoundException(
+                    $"Payment not found for provider reference '{verification.ProviderReference}'.");
+            paymentId = payment.PaymentId;
+        }
+        else
+        {
+            throw new ArgumentException("Webhook payload missing payment identification.");
+        }
+
+        if (string.IsNullOrWhiteSpace(verification.Status))
+            throw new ArgumentException("Webhook payload missing payment status.");
+
+        return await HandleVerifiedCallbackAsync(
+            paymentId,
+            verification.Status,
+            verification.ProviderReference);
     }
 
     /// <summary>
@@ -193,6 +264,60 @@ public class PaymentService : IPaymentService
             dto.TransactionReference,
             adminUserId,
             reason);
+    }
+
+    /// <summary>
+    /// Admin-only: initiates a full refund via the payment provider, then records
+    /// the state change and audit log entry atomically.
+    /// </summary>
+    public async Task<PaymentStatusUpdateResult> RefundAsync(
+        long paymentId,
+        long adminUserId,
+        string reason)
+    {
+        ValidateId(paymentId, nameof(paymentId));
+        ValidateId(adminUserId, nameof(adminUserId));
+
+        reason = reason?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(reason))
+            throw new ArgumentException("Reason is required for a refund.");
+
+        if (reason.Length > 500)
+            throw new ArgumentException("Reason cannot exceed 500 characters.");
+
+        var payment = await _paymentRepository.GetByIdAsync(paymentId);
+
+        if (payment is null)
+            return PaymentStatusUpdateResult.NotFound;
+
+        if (!string.Equals(payment.Status, "Succeeded", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException(
+                $"Only Succeeded payments can be refunded. Current status: '{payment.Status}'.");
+
+        if (string.IsNullOrWhiteSpace(payment.ProviderReference))
+            throw new InvalidOperationException(
+                "Payment has no provider reference. Cannot issue a refund.");
+
+        // Call the provider first. If this fails, nothing is committed to the DB.
+        var refundResult = await _paymentProvider.RefundAsync(
+            payment.ProviderReference,
+            payment.Amount);
+
+        if (!refundResult.Success)
+            throw new InvalidOperationException(
+                $"Payment provider refused the refund: {refundResult.ErrorMessage}");
+
+        // Record the state change atomically with the audit log entry.
+        var refundReason = string.IsNullOrWhiteSpace(refundResult.RefundReference)
+            ? reason
+            : $"{reason} [Provider refund ref: {refundResult.RefundReference}]";
+
+        return await _paymentRepository.AdminUpdateStatusAsync(
+            paymentId,
+            newStatus: "Refunded",
+            transactionReference: null,
+            adminUserId,
+            refundReason);
     }
 
     /// <summary>
