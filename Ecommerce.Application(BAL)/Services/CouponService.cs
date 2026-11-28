@@ -72,8 +72,8 @@ public class CouponService : ICouponService
             DiscountValue = dto.DiscountValue,
             MinOrderAmount = dto.MinOrderAmount,
             MaxDiscountAmount = dto.MaxDiscountAmount,
-            StartsAt = dto.StartsAt,
-            ExpiresAt = dto.ExpiresAt,
+            StartsAt = dto.StartsAt.UtcDateTime,
+            ExpiresAt = dto.ExpiresAt.UtcDateTime,
             UsageLimit = dto.UsageLimit,
             IsActive = dto.IsActive
         };
@@ -117,8 +117,8 @@ public class CouponService : ICouponService
         existingCoupon.DiscountValue = dto.DiscountValue;
         existingCoupon.MinOrderAmount = dto.MinOrderAmount;
         existingCoupon.MaxDiscountAmount = dto.MaxDiscountAmount;
-        existingCoupon.StartsAt = dto.StartsAt;
-        existingCoupon.ExpiresAt = dto.ExpiresAt;
+        existingCoupon.StartsAt = dto.StartsAt.UtcDateTime;
+        existingCoupon.ExpiresAt = dto.ExpiresAt.UtcDateTime;
         existingCoupon.UsageLimit = dto.UsageLimit;
         existingCoupon.IsActive = dto.IsActive;
 
@@ -226,7 +226,12 @@ public class CouponService : ICouponService
         }
 
         // A discount must never exceed the order amount.
-        return Math.Min(discountAmount, orderAmount);
+        discountAmount = Math.Min(discountAmount, orderAmount);
+
+        return decimal.Round(
+            discountAmount,
+            2,
+            MidpointRounding.AwayFromZero);
     }
 
     private static void ValidateCouponData(
@@ -235,8 +240,8 @@ public class CouponService : ICouponService
         decimal discountValue,
         decimal minOrderAmount,
         decimal? maxDiscountAmount,
-        DateTime startsAt,
-        DateTime expiresAt,
+        DateTimeOffset startsAt,
+        DateTimeOffset expiresAt,
         int? usageLimit)
     {
         ValidateCode(code);

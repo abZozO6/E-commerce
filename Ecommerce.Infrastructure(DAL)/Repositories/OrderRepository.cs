@@ -278,10 +278,20 @@ public class OrderRepository : IOrderRepository
                 if (!coupon.IsActive)
                     throw new InvalidOperationException("Coupon is inactive.");
 
-                // Coupon dates are expected to be stored in UTC.
+                // SQL Server DATETIME2 does not preserve DateTimeKind.
+                // The application stores coupon dates in UTC, so mark the
+                // values returned by Dapper as UTC before comparing them.
+                var couponStartsAtUtc = DateTime.SpecifyKind(
+                    coupon.StartsAt,
+                    DateTimeKind.Utc);
+
+                var couponExpiresAtUtc = DateTime.SpecifyKind(
+                    coupon.ExpiresAt,
+                    DateTimeKind.Utc);
+
                 var now = DateTime.UtcNow;
 
-                if (now < coupon.StartsAt || now > coupon.ExpiresAt)
+                if (now < couponStartsAtUtc || now > couponExpiresAtUtc)
                     throw new InvalidOperationException("Coupon is outside its validity period.");
 
                 if (subtotal < coupon.MinOrderAmount)
@@ -560,9 +570,9 @@ public class OrderRepository : IOrderRepository
                 auditSql,
                 new
                 {
-                    OrderId        = orderId,
+                    OrderId = orderId,
                     CustomerUserId = userId,
-                    Reason         = "Cancelled by customer."
+                    Reason = "Cancelled by customer."
                 },
                 transaction);
 
@@ -618,7 +628,7 @@ public class OrderRepository : IOrderRepository
     /// </summary>
     public static string NormalizeStatus(string status) => Order.NormalizeStatus(status);
 
-   
+
     private static bool IsAllowedStatus(string status) => Order.IsAllowedStatus(status);
 
     private sealed class ProductSnapshot
@@ -660,17 +670,17 @@ public class OrderRepository : IOrderRepository
     }
 
 
-    
+
     private static readonly IReadOnlyDictionary<string, IReadOnlySet<string>> AllowedTransitions =
         new Dictionary<string, IReadOnlySet<string>>(StringComparer.OrdinalIgnoreCase)
         {
-            ["Pending"]    = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Confirmed", "Cancelled" },
-            ["Confirmed"]  = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Processing", "Cancelled" },
+            ["Pending"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Confirmed", "Cancelled" },
+            ["Confirmed"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Processing", "Cancelled" },
             ["Processing"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Shipped", "Cancelled" },
-            ["Shipped"]    = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Delivered", "Returned" },
-            ["Delivered"]  = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Returned" },
-            ["Cancelled"]  = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { },
-            ["Returned"]   = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { },
+            ["Shipped"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Delivered", "Returned" },
+            ["Delivered"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "Returned" },
+            ["Cancelled"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { },
+            ["Returned"] = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { },
         };
 
     /// <summary>
@@ -821,11 +831,11 @@ public class OrderRepository : IOrderRepository
                 auditSql,
                 new
                 {
-                    OrderId     = orderId,
+                    OrderId = orderId,
                     AdminUserId = adminUserId,
-                    OldStatus   = currentStatus,
-                    NewStatus   = normalizedNew,
-                    Reason      = trimmedReason
+                    OldStatus = currentStatus,
+                    NewStatus = normalizedNew,
+                    Reason = trimmedReason
                 },
                 transaction);
 

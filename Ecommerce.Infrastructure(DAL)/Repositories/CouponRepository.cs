@@ -24,9 +24,11 @@ public class CouponRepository : ICouponRepository
             WHERE CouponId = @CouponId;
             """;
 
-        return await connection.QuerySingleOrDefaultAsync<Coupon>(
-            sql,
-            new { CouponId = couponId });
+        var coupon = await connection.QuerySingleOrDefaultAsync<Coupon>(
+      sql,
+      new { CouponId = couponId });
+
+        return NormalizeUtc(coupon);
     }
 
     public async Task<Coupon?> GetByCodeAsync(string code)
@@ -36,15 +38,18 @@ public class CouponRepository : ICouponRepository
         using var connection = _connectionFactory.CreateConnection();
 
         const string sql = """
-            SELECT CouponId, Code, DiscountType, DiscountValue, MinOrderAmount,
-                   MaxDiscountAmount, StartsAt, ExpiresAt, UsageLimit, IsActive
-            FROM dbo.Coupons
-            WHERE Code = @Code;
-            """;
+        SELECT CouponId, Code, DiscountType, DiscountValue, MinOrderAmount,
+               MaxDiscountAmount, StartsAt, ExpiresAt, UsageLimit, IsActive
+        FROM dbo.Coupons
+        WHERE Code = @Code;
+        """;
 
-        return await connection.QuerySingleOrDefaultAsync<Coupon>(
+        var coupon = await connection.QuerySingleOrDefaultAsync<Coupon>(
             sql,
-            new { Code = code.Trim() });
+            new { Code = code.Trim() }
+        );
+
+        return NormalizeUtc(coupon);
     }
 
     public async Task<IEnumerable<Coupon>> GetAllAsync()
@@ -58,7 +63,9 @@ public class CouponRepository : ICouponRepository
             ORDER BY CouponId DESC;
             """;
 
-        return await connection.QueryAsync<Coupon>(sql);
+        var coupons = await connection.QueryAsync<Coupon>(sql);
+
+        return coupons.Select(coupon => NormalizeUtc(coupon)!);
     }
 
     public async Task<int> GetUsageCountAsync(long couponId)
@@ -126,6 +133,7 @@ public class CouponRepository : ICouponRepository
             """;
 
         coupon.Code = coupon.Code.Trim();
+        EnsureUtc(coupon);
 
         return await connection.ExecuteScalarAsync<long>(sql, coupon);
     }
@@ -152,6 +160,7 @@ public class CouponRepository : ICouponRepository
             """;
 
         coupon.Code = coupon.Code.Trim();
+        EnsureUtc(coupon);
 
         var rowsAffected = await connection.ExecuteAsync(sql, coupon);
 
@@ -178,4 +187,31 @@ public class CouponRepository : ICouponRepository
 
         return rowsAffected > 0;
     }
+
+    private static Coupon? NormalizeUtc(Coupon? coupon)
+    {
+        if (coupon is null)
+            return null;
+
+        coupon.StartsAt = DateTime.SpecifyKind(
+            coupon.StartsAt,
+            DateTimeKind.Utc);
+
+        coupon.ExpiresAt = DateTime.SpecifyKind(
+            coupon.ExpiresAt,
+            DateTimeKind.Utc);
+
+        return coupon;
+    }
+
+    private static void EnsureUtc(Coupon coupon)
+    {
+        if (coupon.StartsAt.Kind != DateTimeKind.Utc ||
+            coupon.ExpiresAt.Kind != DateTimeKind.Utc)
+        {
+            throw new ArgumentException(
+                "Coupon dates must be provided in UTC.");
+        }
+    }
+
 }
