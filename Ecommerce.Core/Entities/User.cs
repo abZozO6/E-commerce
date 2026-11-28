@@ -17,6 +17,10 @@ namespace Ecommerce.Core.Entities
         public bool IsDeleted { get; set; } = false;
         public DateTime? DeletedAt { get; set; } = null;
         public DateTime CreatedAt { get; set; }
+
+        public int FailedLoginAttempts { get; set; } = 0;
+
+        public DateTime? LockoutEnd { get; set; }
     }
 
 }

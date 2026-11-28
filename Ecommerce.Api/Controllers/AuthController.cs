@@ -4,6 +4,7 @@ using Ecommerce.Application_BAL_.DTOs.Auth;
 using Ecommerce.Application_BAL_.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace Ecommerce.API.Controllers;
 
@@ -23,6 +24,7 @@ public class AuthController : ControllerBase
     /// </summary>
     [HttpPost("register")]
     [AllowAnonymous]
+    [EnableRateLimiting("Register")]
     public async Task<IActionResult> Register(RegisterDto dto)
     {
         try
@@ -45,6 +47,7 @@ public class AuthController : ControllerBase
     /// </summary>
     [HttpPost("login")]
     [AllowAnonymous]
+    [EnableRateLimiting("Login")]
     public async Task<IActionResult> Login(LoginDto dto)
     {
         try

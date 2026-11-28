@@ -17,9 +17,17 @@ public interface IUserRepository
     Task<long> CreateAsync(User user);
 
     Task<bool> UpdateProfileAsync(User user);
+
     Task<bool> UpdateRoleAsync(long userId, string newRole);
 
     Task<bool> UpdatePasswordAsync(long userId, string newPasswordHash);
 
     Task<bool> SoftDeleteAsync(long userId);
+
+    Task<bool> RecordFailedLoginAttemptAsync(
+    long userId,
+    int maxAttempts,
+    int lockoutMinutes);
+
+    Task<bool> ResetLoginAttemptsAsync(long userId);
 }

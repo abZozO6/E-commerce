@@ -1,4 +1,5 @@
-﻿using System.Net.Mail;
+﻿
+using System.Net.Mail;
 using System.Text;
 using BCrypt.Net;
 using Ecommerce.Application_BAL_.DTOs.Auth;
@@ -12,6 +13,9 @@ public class AuthService : IAuthService
 {
     private readonly IUserRepository _userRepository;
     private readonly IJwtTokenGenerator _jwtTokenGenerator;
+
+    private const int MaxFailedLoginAttempts = 5;
+    private const int LockoutDurationMinutes = 15;
 
     public AuthService(
         IUserRepository userRepository,
@@ -79,23 +83,53 @@ public class AuthService : IAuthService
             user.IsDeleted ||
             !user.IsActive)
         {
-            throw new UnauthorizedAccessException("Invalid email or password.");
+            throw new UnauthorizedAccessException(
+                "Invalid email or password.");
+        }
+
+        // Check whether the account is currently locked.
+        if (user.LockoutEnd.HasValue &&
+            user.LockoutEnd.Value > DateTime.UtcNow)
+        {
+            throw new UnauthorizedAccessException(
+                "Invalid email or password.");
         }
 
         bool passwordIsValid;
 
         try
         {
-            passwordIsValid = BCrypt.Net.BCrypt.Verify(dto.Password,user.PasswordHash);
+            passwordIsValid = BCrypt.Net.BCrypt.Verify(
+                dto.Password,
+                user.PasswordHash);
         }
         catch (SaltParseException)
         {
             passwordIsValid = false;
         }
 
+        // Record failed login attempt.
         if (!passwordIsValid)
         {
-            throw new UnauthorizedAccessException("Invalid email or password.");
+            await _userRepository.RecordFailedLoginAttemptAsync(
+                user.UserId,
+                MaxFailedLoginAttempts,
+                LockoutDurationMinutes);
+
+            throw new UnauthorizedAccessException(
+                "Invalid email or password.");
+        }
+
+        // Reset failed attempts after successful password verification.
+        // If another request locked the account concurrently,
+        // this operation returns false and no token is issued.
+        var attemptsReset = await _userRepository.ResetLoginAttemptsAsync(
+            user.UserId);
+
+        if (!attemptsReset)
+        {
+            throw new UnauthorizedAccessException(
+                "Invalid email or password.");
         }
 
         return CreateAuthResponse(user);
@@ -103,7 +137,9 @@ public class AuthService : IAuthService
 
     private AuthResponseDto CreateAuthResponse(User user)
     {
-        var token = _jwtTokenGenerator.GenerateToken(user,out var expiresAt);
+        var token = _jwtTokenGenerator.GenerateToken(
+            user,
+            out var expiresAt);
 
         return new AuthResponseDto
         {
@@ -127,7 +163,8 @@ public class AuthService : IAuthService
             fullName.Length < 3 ||
             fullName.Length > 150)
         {
-            throw new ArgumentException("Full name must be between 3 and 150 characters.");
+            throw new ArgumentException(
+                "Full name must be between 3 and 150 characters.");
         }
     }
 
@@ -142,7 +179,8 @@ public class AuthService : IAuthService
         {
             var address = new MailAddress(email);
 
-            if (!address.Address.Equals(email,
+            if (!address.Address.Equals(
+                email,
                 StringComparison.OrdinalIgnoreCase))
             {
                 throw new ArgumentException("Invalid email address.");

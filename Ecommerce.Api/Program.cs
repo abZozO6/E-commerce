@@ -1,34 +1,141 @@
 
+using System.Globalization;
 using System.Security.Claims;
 using System.Text;
+using System.Threading.RateLimiting;
+
 using Ecommerce.API.Middleware;
 using Ecommerce.Application_BAL_;
 using Ecommerce.Application_BAL_.Helpers;
 using Ecommerce.Core.Interfaces;
 using Ecommerce.Infrastructure;
 using Ecommerce.Infrastructure_DAL_.BackgroundServices;
+
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.IdentityModel.Tokens;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// --------------------------------------------------
+// Controllers and Swagger
+// --------------------------------------------------
 
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
+// --------------------------------------------------
+// Exception Handling
+// --------------------------------------------------
+
 builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
 
+// --------------------------------------------------
 // Application and Infrastructure
+// --------------------------------------------------
+
 builder.Services.AddApplication(builder.Configuration);
 builder.Services.AddInfrastructure();
 
-// Payment expiration background service
+// --------------------------------------------------
+// Payment Expiration Background Service
+// --------------------------------------------------
+
 builder.Services.Configure<PaymentExpirationOptions>(
     builder.Configuration.GetSection(PaymentExpirationOptions.SectionName));
+
 builder.Services.AddHostedService<PaymentExpirationService>();
 
+// --------------------------------------------------
+// Rate Limiting
+// --------------------------------------------------
+
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+
+    // Global limit: 100 requests per minute per IP.
+    options.GlobalLimiter =
+        PartitionedRateLimiter.Create<HttpContext, string>(httpContext =>
+        {
+            var ip = httpContext.Connection.RemoteIpAddress?.ToString()
+                     ?? "unknown";
+
+            return RateLimitPartition.GetFixedWindowLimiter(
+                partitionKey: ip,
+                factory: _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = 100,
+                    Window = TimeSpan.FromMinutes(1),
+                    QueueLimit = 0,
+                    AutoReplenishment = true
+                });
+        });
+
+    // Login: 5 requests per minute per IP.
+    options.AddPolicy("Login", httpContext =>
+    {
+        var ip = httpContext.Connection.RemoteIpAddress?.ToString()
+                 ?? "unknown";
+
+        return RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: ip,
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 5,
+                Window = TimeSpan.FromMinutes(1),
+                QueueLimit = 0,
+                AutoReplenishment = true
+            });
+    });
+
+    // Register: 3 requests per 10 minutes per IP.
+    options.AddPolicy("Register", httpContext =>
+    {
+        var ip = httpContext.Connection.RemoteIpAddress?.ToString()
+                 ?? "unknown";
+
+        return RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: ip,
+            factory: _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 3,
+                Window = TimeSpan.FromMinutes(10),
+                QueueLimit = 0,
+                AutoReplenishment = true
+            });
+    });
+
+    // Response when a rate limit is exceeded.
+    options.OnRejected = async (context, cancellationToken) =>
+    {
+        var response = context.HttpContext.Response;
+
+        if (context.Lease.TryGetMetadata(
+                MetadataName.RetryAfter,
+                out var retryAfter))
+        {
+            response.Headers.RetryAfter =
+                Math.Ceiling(retryAfter.TotalSeconds)
+                    .ToString(CultureInfo.InvariantCulture);
+        }
+
+        await response.WriteAsJsonAsync(
+            new
+            {
+                status = StatusCodes.Status429TooManyRequests,
+                message = "Too many requests. Please try again later."
+            },
+            cancellationToken);
+    };
+});
+
+// --------------------------------------------------
 // JWT Authentication Configuration
+// --------------------------------------------------
+
 var jwtSettings = builder.Configuration
     .GetSection(JwtSettings.SectionName)
     .Get<JwtSettings>()
@@ -102,11 +209,16 @@ builder.Services.AddAuthentication(options =>
 
             if (user is null || !user.IsActive || user.IsDeleted)
             {
-                context.Fail("User account is inactive or unavailable.");
+                context.Fail(
+                    "User account is inactive or unavailable.");
             }
         }
     };
 });
+
+// --------------------------------------------------
+// Build Application
+// --------------------------------------------------
 
 var app = builder.Build();
 
@@ -119,9 +231,17 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
+// --------------------------------------------------
+// Middleware Pipeline
+// --------------------------------------------------
+
 app.UseHttpsRedirection();
 
-// Authentication must run before Authorization
+app.UseRouting();
+
+// Rate Limiting must run before authentication.
+app.UseRateLimiter();
+
 app.UseAuthentication();
 app.UseAuthorization();
 

@@ -322,4 +322,80 @@ public class UserRepository : IUserRepository
             throw;
         }
     }
+
+
+    public async Task<bool> RecordFailedLoginAttemptAsync(
+    long userId,
+    int maxAttempts,
+    int lockoutMinutes)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(userId);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxAttempts);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(lockoutMinutes);
+
+        using var connection = _connectionFactory.CreateConnection();
+
+        const string sql = """
+        UPDATE u
+        SET
+            FailedLoginAttempts = nextState.Attempts,
+            LockoutEnd = CASE
+                WHEN nextState.Attempts >= @MaxAttempts
+                    THEN DATEADD(MINUTE, @LockoutMinutes, SYSUTCDATETIME())
+                ELSE NULL
+            END
+        FROM dbo.Users AS u
+        CROSS APPLY
+        (
+            SELECT
+                CASE
+                    WHEN u.LockoutEnd IS NOT NULL
+                         AND u.LockoutEnd <= SYSUTCDATETIME()
+                        THEN 1
+                    ELSE u.FailedLoginAttempts + 1
+                END AS Attempts
+        ) AS nextState
+        WHERE u.UserId = @UserId
+          AND u.IsActive = 1
+          AND u.IsDeleted = 0
+          AND (
+                u.LockoutEnd IS NULL
+                OR u.LockoutEnd <= SYSUTCDATETIME()
+          );
+        """;
+
+        var affectedRows = await connection.ExecuteAsync(sql, new
+        {
+            UserId = userId,
+            MaxAttempts = maxAttempts,
+            LockoutMinutes = lockoutMinutes
+        });
+
+        return affectedRows > 0;
+    }
+
+    public async Task<bool> ResetLoginAttemptsAsync(long userId)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(userId);
+
+        using var connection = _connectionFactory.CreateConnection();
+
+        const string sql = """
+        UPDATE dbo.Users
+        SET
+            FailedLoginAttempts = 0,
+            LockoutEnd = NULL
+        WHERE UserId = @UserId
+          AND IsDeleted = 0
+          AND IsActive = 1;
+        """;
+
+        var affectedRows = await connection.ExecuteAsync(sql, new
+        {
+            UserId = userId
+        });
+
+        return affectedRows > 0;
+    }
+
 }
