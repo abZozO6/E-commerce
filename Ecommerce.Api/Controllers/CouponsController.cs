@@ -2,6 +2,7 @@ using Ecommerce.Application_BAL_.DTOs.Coupons;
 using Ecommerce.Application_BAL_.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace Ecommerce.API.Controllers;
 
@@ -17,6 +18,8 @@ public class CouponsController : ControllerBase
     }
 
     // POST: api/Coupons/validate?code=DISCOUNT&orderAmount=100
+    [Authorize]
+    [EnableRateLimiting("CouponValidation")]
     [HttpPost("validate")]
     public async Task<ActionResult<CouponValidationDto>> ValidateCoupon(
         [FromQuery] string code,

@@ -1,4 +1,5 @@
-﻿using Ecommerce.Application_BAL_.DTOs.Coupons;
+﻿
+using Ecommerce.Application_BAL_.DTOs.Coupons;
 using Ecommerce.Application_BAL_.Interfaces;
 using Ecommerce.Core.Entities;
 using Ecommerce.Core.Interfaces;
@@ -8,6 +9,9 @@ namespace Ecommerce.Application_BAL_.Services;
 public class CouponService : ICouponService
 {
     private readonly ICouponRepository _couponRepository;
+
+    private const string InvalidCouponMessage =
+        "This coupon is invalid or cannot be applied.";
 
     public CouponService(ICouponRepository couponRepository)
     {
@@ -142,12 +146,12 @@ public class CouponService : ICouponService
         return await _couponRepository.DeleteAsync(couponId);
     }
 
-
-
     /// <summary>
     /// Validates a coupon against the order amount and calculates the discount.
     /// </summary>
-    public async Task<CouponValidationDto> ValidateCouponAsync(string code,decimal orderAmount)
+    public async Task<CouponValidationDto> ValidateCouponAsync(
+        string code,
+        decimal orderAmount)
     {
         ValidateCode(code);
 
@@ -157,27 +161,25 @@ public class CouponService : ICouponService
                 "Order amount must be greater than zero.");
 
         var normalizedCode = code.Trim().ToUpperInvariant();
+
         var coupon = await _couponRepository.GetByCodeAsync(normalizedCode);
 
         if (coupon is null)
-            return InvalidCoupon("Coupon code was not found.");
+            return InvalidCoupon();
 
         if (!coupon.IsActive)
-            return InvalidCoupon("This coupon is inactive.");
+            return InvalidCoupon();
 
         var now = DateTime.UtcNow;
 
         if (now < coupon.StartsAt)
-            return InvalidCoupon("This coupon is not active yet.");
+            return InvalidCoupon();
 
         if (now > coupon.ExpiresAt)
-            return InvalidCoupon("This coupon has expired.");
+            return InvalidCoupon();
 
         if (orderAmount < coupon.MinOrderAmount)
-        {
-            return InvalidCoupon(
-                $"Minimum order amount is {coupon.MinOrderAmount}.");
-        }
+            return InvalidCoupon();
 
         var usageCount = await _couponRepository.GetUsageCountAsync(
             coupon.CouponId);
@@ -185,7 +187,7 @@ public class CouponService : ICouponService
         if (coupon.UsageLimit.HasValue &&
             usageCount >= coupon.UsageLimit.Value)
         {
-            return InvalidCoupon("This coupon has reached its usage limit.");
+            return InvalidCoupon();
         }
 
         var discountAmount = CalculateDiscount(coupon, orderAmount);
@@ -200,13 +202,16 @@ public class CouponService : ICouponService
         };
     }
 
-    private static decimal CalculateDiscount(Coupon coupon,decimal orderAmount)
+    private static decimal CalculateDiscount(
+        Coupon coupon,
+        decimal orderAmount)
     {
         decimal discountAmount;
 
         if (coupon.DiscountType == "Percentage")
         {
-            discountAmount = orderAmount * coupon.DiscountValue / 100m;
+            discountAmount =
+                orderAmount * coupon.DiscountValue / 100m;
         }
         else
         {
@@ -329,12 +334,12 @@ public class CouponService : ICouponService
         };
     }
 
-    private static CouponValidationDto InvalidCoupon(string message)
+    private static CouponValidationDto InvalidCoupon()
     {
         return new CouponValidationDto
         {
             IsValid = false,
-            Message = message,
+            Message = InvalidCouponMessage,
             DiscountAmount = 0,
             FinalAmount = 0
         };

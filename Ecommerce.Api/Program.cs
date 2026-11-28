@@ -130,6 +130,19 @@ builder.Services.AddRateLimiter(options =>
             },
             cancellationToken);
     };
+
+    options.AddPolicy("CouponValidation", httpContext =>
+    RateLimitPartition.GetFixedWindowLimiter(
+        partitionKey:
+            httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+        factory: _ => new FixedWindowRateLimiterOptions
+        {
+            PermitLimit = 10,
+            Window = TimeSpan.FromMinutes(1),
+            QueueLimit = 0,
+            AutoReplenishment = true
+        }));
+
 });
 
 // --------------------------------------------------
